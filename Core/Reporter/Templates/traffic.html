@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>流量分析报告 — __TITLE__</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+<style>
+:root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--bg4:#2d333b;--border:#30363d;
+  --text:#e6edf3;--text2:#8b949e;--text3:#6e7681;--accent:#58a6ff;--green:#3fb950;
+  --yellow:#d29922;--red:#f85149;--orange:#d18616;--purple:#bc8cff;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;line-height:1.6}
+.wrap{max-width:1400px;margin:0 auto;padding:20px 24px}
+.header{background:linear-gradient(135deg,#0d1117,#161b22,#1a2540);border-bottom:1px solid var(--border);padding:24px 32px}
+.header-inner{max-width:1400px;margin:0 auto;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.title-block h1{font-size:20px;font-weight:700}
+.title-block .sub{font-size:12px;color:var(--text2);margin-top:2px}
+.header-meta{margin-left:auto;display:flex;gap:20px;font-size:12px;color:var(--text2)}
+.tabs{border-bottom:1px solid var(--border);display:flex;background:var(--bg);padding:0;margin-bottom:24px;overflow-x:auto;position:sticky;top:0;z-index:99}
+.tab{padding:12px 20px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;transition:all .2s;font-size:13px;font-weight:500;white-space:nowrap}
+.tab:hover{color:var(--text);background:var(--bg2)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none}.tab-content.active{display:block}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:1000px){.g2,.g3,.g4{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.g2,.g3,.g4{grid-template-columns:1fr}}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.card-hd{padding:14px 18px;border-bottom:1px solid var(--border)}
+.card-hd h3{font-size:13px;font-weight:600}
+.card-bd{padding:16px 18px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px 18px;position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.kpi.blue::before{background:var(--accent)}.kpi.green::before{background:var(--green)}
+.kpi.yellow::before{background:var(--yellow)}.kpi.red::before{background:var(--red)}
+.kpi.purple::before{background:var(--purple)}.kpi.orange::before{background:var(--orange)}
+.kpi-val{font-size:24px;font-weight:700;line-height:1.1}
+.kpi-lbl{font-size:11px;color:var(--text2);margin-top:4px}
+.kpi-sub{font-size:11px;color:var(--text3);margin-top:2px}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border);white-space:nowrap}
+.tbl td{padding:7px 10px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(88,166,255,.04)}
+.tbl .mono{font-family:monospace;font-size:11px}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl .path{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}
+.s2{background:rgba(63,185,80,.15);color:var(--green)}.s3{background:rgba(88,166,255,.15);color:var(--accent)}
+.s4{background:rgba(210,153,34,.15);color:var(--yellow)}.s5{background:rgba(248,81,73,.15);color:var(--red)}
+.bar-wrap{display:flex;align-items:center;gap:8px}
+.bar-bg{flex:1;height:6px;background:var(--bg4);border-radius:3px;min-width:40px}
+.bar-fill{height:100%;border-radius:3px}
+/* chart containers — explicit heights so ECharts always has a non-zero box */
+.ch300{width:100%;height:300px}
+.ch360{width:100%;height:360px}
+.ch420{width:100%;height:420px}
+.ch200{width:100%;height:200px}
+</style>
+</head>
+<body>
+<div class="header"><div class="header-inner">
+  <div class="title-block"><h1>📊 流量分析报告</h1><div class="sub">__FILE_NAME__ · LogAudit v2.0</div></div>
+  <div class="header-meta"><span>🕐 __REPORT_TIME__</span><span>⏱ __DURATION__</span></div>
+</div></div>
+<div class="wrap">
+<div class="tabs">
+  <div class="tab active" onclick="showTab('overview',this)">📈 总览</div>
+  <div class="tab" onclick="showTab('traffic',this)">🕐 流量时序</div>
+  <div class="tab" onclick="showTab('ips',this)">🌐 IP分析</div>
+  <div class="tab" onclick="showTab('pages',this)">📄 页面分析</div>
+  <div class="tab" onclick="showTab('clients',this)">🖥 客户端</div>
+  <div class="tab" onclick="showTab('errors',this)">⚠ 错误分析</div>
+</div>
+__KPI__
+<div id="tab-overview" class="tab-content active">__SEC_OVERVIEW__</div>
+<div id="tab-traffic"  class="tab-content">__SEC_TRAFFIC__</div>
+<div id="tab-ips"      class="tab-content">__SEC_IPS__</div>
+<div id="tab-pages"    class="tab-content">__SEC_PAGES__</div>
+<div id="tab-clients"  class="tab-content">__SEC_CLIENTS__</div>
+<div id="tab-errors"   class="tab-content">__SEC_ERRORS__</div>
+</div>
+<script>
+var D=__JSON__;
+var _done={};
+// ── chart helpers ──────────────────────────────────────────────────────
+var _palette=['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#39d353','#f97316','#06b6d4','#e879f9','#facc15'];
+function base(extra){return Object.assign({backgroundColor:'transparent',textStyle:{color:'#e6edf3',fontFamily:'Segoe UI,system-ui',fontSize:12}},extra);}
+function mkChart(id,opt){
+  var el=document.getElementById(id);
+  if(!el)return;
+  var c=echarts.init(el);
+  c.setOption(base(opt));
+  window.addEventListener('resize',function(){c.resize();});
+  return c;
+}
+function tt(){return {trigger:'axis',backgroundColor:'#21262d',borderColor:'#30363d',textStyle:{color:'#e6edf3'}};}
+function ttItem(){return {trigger:'item',backgroundColor:'#21262d',borderColor:'#30363d',formatter:'{b}: {c} ({d}%)',textStyle:{color:'#e6edf3'}};}
+function splitLine(){return {lineStyle:{color:'#21262d',type:'dashed'}};}
+
+function drawBarH(id,vals,names,color){
+  var n=names.length;
+  var h=Math.max(260,n*28+60);
+  var el=document.getElementById(id);
+  if(el)el.style.height=h+'px';
+  mkChart(id,{
+    grid:{left:150,right:40,top:20,bottom:30,containLabel:false},
+    xAxis:{type:'value',axisLabel:{color:'#8b949e'},splitLine:splitLine()},
+    yAxis:{type:'category',data:names,axisLabel:{color:'#e6edf3',fontSize:11,width:140,overflow:'truncate'},inverse:false},
+    series:[{type:'bar',data:vals,itemStyle:{color:color||'#58a6ff',borderRadius:[0,4,4,0]},barMaxWidth:22,label:{show:true,position:'right',color:'#8b949e',fontSize:10,formatter:function(p){return p.value.toLocaleString();}}}],
+    tooltip:tt()
+  });
+}
+function drawPie(id,data,colors){
+  mkChart(id,{
+    tooltip:ttItem(),
+    legend:{type:'scroll',orient:'vertical',right:8,top:'middle',textStyle:{color:'#8b949e',fontSize:11},pageTextStyle:{color:'#8b949e'}},
+    series:[{type:'pie',radius:['38%','65%'],center:['40%','50%'],
+      data:data.map(function(d,i){return {name:d.name,value:d.value,itemStyle:{color:(colors||_palette)[i%10]}};}),
+      label:{show:true,formatter:'{b}\n{d}%',color:'#e6edf3',fontSize:10},
+      labelLine:{length:8,length2:6},
+      emphasis:{itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.4)'}}}]
+  });
+}
+function drawLine(id,times,vals,color,color2,vals2,vals3){
+  var c=color||'#58a6ff';
+  var series=[{name:'请求数',type:'line',data:vals,smooth:true,
+    itemStyle:{color:c},lineStyle:{color:c,width:2},
+    areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:c+'55'},{offset:1,color:c+'05'}]}}}];
+  if(vals2) series.push({name:'严重',type:'line',data:vals2,smooth:true,lineStyle:{color:'#ff2255',width:1.5},itemStyle:{color:'#ff2255'},showSymbol:false});
+  if(vals3) series.push({name:'高危',type:'line',data:vals3,smooth:true,lineStyle:{color:'#ff7700',width:1.5},itemStyle:{color:'#ff7700'},showSymbol:false});
+  mkChart(id,{
+    grid:{left:60,right:20,top:series.length>1?40:20,bottom:60},
+    legend:series.length>1?{top:4,textStyle:{color:'#8b949e',fontSize:11}}:{show:false},
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b949e',rotate:45,fontSize:10},boundaryGap:false},
+    yAxis:{type:'value',axisLabel:{color:'#8b949e'},splitLine:splitLine()},
+    series:series,
+    tooltip:tt(),
+    dataZoom:[{type:'inside'},{type:'slider',height:20,bottom:8,borderColor:'#30363d',fillerColor:'rgba(88,166,255,.2)',handleStyle:{color:'#58a6ff'}}]
+  });
+}
+function drawHBar(id,vals,names,color){
+  mkChart(id,{
+    grid:{left:50,right:20,top:20,bottom:50},
+    xAxis:{type:'category',data:names,axisLabel:{color:'#8b949e',fontSize:10,rotate:names.length>8?30:0}},
+    yAxis:{type:'value',axisLabel:{color:'#8b949e'},splitLine:splitLine()},
+    series:[{type:'bar',data:vals,itemStyle:{color:color||'#58a6ff',borderRadius:[3,3,0,0]},barMaxWidth:40,
+      label:{show:true,position:'top',color:'#8b949e',fontSize:9,formatter:function(p){return p.value>0?p.value.toLocaleString():'';}}}],
+    tooltip:tt()
+  });
+}
+// ── per-tab init ───────────────────────────────────────────────────────
+function initOverview(){
+  if(D.sp&&D.sp.length) drawPie('ch-status-pie',D.sp);
+  if(D.hod&&D.hod.length) drawHBar('ch-hod',D.hod.map(function(x){return x.v;}),D.hod.map(function(x){return x.k;}));
+  if(D.dow&&D.dow.length) drawHBar('ch-dow',D.dow.map(function(x){return x.v;}),D.dow.map(function(x){return x.k;}),'#3fb950');
+}
+function initTraffic(){
+  if(D.d&&D.d.length) drawLine('ch-daily',D.d.map(function(x){return x.t;}),D.d.map(function(x){return x.c;}));
+  if(D.h&&D.h.length) drawLine('ch-hourly',D.h.map(function(x){return x.t;}),D.h.map(function(x){return x.c;}),'#bc8cff');
+}
+function initIPs(){
+  if(D.ips&&D.ips.length){
+    var top=D.ips.slice(0,15);
+    drawBarH('ch-top-ip',top.map(function(x){return x.req;}),top.map(function(x){return x.ip;}));
+    drawPie('ch-ip-dist',top.map(function(x){return {name:x.ip,value:x.req};}));
+  }
+}
+function initPages(){
+  if(D.pgs&&D.pgs.length){
+    var pp=D.pgs.slice(0,12);
+    drawBarH('ch-pages',pp.map(function(x){return x.r;}),pp.map(function(x){var p=x.p;return p.length>35?'…'+p.slice(-33):p;}),'#f97316');
+  }
+  if(D.sts&&D.sts.length){
+    var ss=D.sts.slice(0,12);
+    drawBarH('ch-static',ss.map(function(x){return x.r;}),ss.map(function(x){var p=x.p;return p.length>35?'…'+p.slice(-33):p;}),'#06b6d4');
+  }
+  if(D.refs&&D.refs.length) drawBarH('ch-referer',D.refs.map(function(x){return x.v;}),D.refs.map(function(x){return x.k;}),'#39d353');
+}
+function initClients(){
+  if(D.br&&D.br.length) drawPie('ch-browser',D.br.map(function(x){return {name:x.k,value:x.v};}));
+  if(D.os&&D.os.length) drawPie('ch-os',D.os.map(function(x){return {name:x.k,value:x.v};}));
+  if(D.mt&&D.mt.length) drawBarH('ch-method',D.mt.map(function(x){return x.v;}),D.mt.map(function(x){return x.k;}),'#3fb950');
+  if(D.pt&&D.pt.length) drawBarH('ch-proto',D.pt.map(function(x){return x.v;}),D.pt.map(function(x){return x.k;}),'#bc8cff');
+  if(D.ex&&D.ex.length){
+    var ex=D.ex.slice(0,15);
+    drawBarH('ch-ext',ex.map(function(x){return x.v;}),ex.map(function(x){return x.k;}),'#d29922');
+  }
+}
+// ── tab switch ─────────────────────────────────────────────────────────
+var _tabInits={overview:initOverview,traffic:initTraffic,ips:initIPs,pages:initPages,clients:initClients};
+function showTab(name,el){
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});
+  document.querySelectorAll('.tab-content').forEach(function(c){c.classList.toggle('active',c.id==='tab-'+name);});
+  el.classList.add('active');
+  if(!_done[name]&&_tabInits[name]){setTimeout(function(){_tabInits[name]();_done[name]=1;},30);}
+}
+// init visible tab immediately after paint
+window.addEventListener('load',function(){initOverview();_done['overview']=1;});
+</script>
+</body>
+</html>

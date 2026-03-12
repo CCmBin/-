@@ -1,0 +1,1678 @@
+version: "2.1"
+# LogAudit 规则库 v2.1
+# 优化说明: 
+#   1. 移除所有非必要注释、装饰线和宽泛说明，保留核心结构
+#   2. 优化匹配规则：为关键关键词添加 \b 词边界、要求更多上下文（如参数格式、HTTP方法前缀、特定长度/重复阈值），减少误报（例如 SQL/路径穿越/XSS 避免合法静态资源或工具误触发）
+#   3. 保留设计原则（精确匹配、实战来源），中低危适当宽松但收紧重复/通配
+#   4. 新增2025-2026最新规则（React2Shell CVE-2025-55182 等，基于 Google Cloud Armor / AWS / Microsoft / Trend Micro 等公开 WAF 指标）
+# 规则总数: 152+
+
+rules:
+
+  - id: SQL_UNION_SELECT
+    name: SQL注入-UNION SELECT
+    category: SQL注入
+    severity: critical
+    patterns:
+      - '(?i)\bunion\s+all\s+select\s+(?:null|0x|char\(|''|[0-9])'
+      - '(?i)\bunion\s+select\s+(?:null|0x|char\(|''|[0-9@])'
+      - '(?i)\bunion\s+/\*[^*]*\*/\s*select'
+      - '(?i)\bunion\s+%09select'
+      - '(?i)uni(?:on|%6fn)\s+sel(?:ect|%65ct)'
+
+  - id: SQL_ERROR_BASED
+    name: SQL注入-报错注入
+    category: SQL注入
+    severity: critical
+    patterns:
+      - '(?i)\bextractvalue\s*\(\s*(?:1|0x[0-9a-f]+)\s*,\s*(?:concat|0x)'
+      - '(?i)\bupdatexml\s*\(\s*(?:1|0x[0-9a-f]+)\s*,\s*(?:concat|0x)'
+      - '(?i)\bfloor\s*\(\s*rand\s*\(\s*(?:0|1)\s*\)\s*\)\s*\*\s*2'
+      - '(?i)\bexp\s*\(\s*~\s*\('
+      - '(?i)\bgeometrycollection\s*\(\s*(?:select|null)'
+      - '(?i)\bpolygon\s*\(\s*(?:select|null)'
+      - '(?i)\bmultipoint\s*\(\s*(?:select|null)'
+      - '(?i)\bname_const\s*\(\s*(?:version|user|database)\s*\('
+
+  - id: SQL_BLIND_BOOLEAN
+    name: SQL注入-布尔盲注
+    category: SQL注入
+    severity: high
+    patterns:
+      - '(?i)(?:and|or)\s+\d+\s*=\s*\d+\s*--'
+      - '(?i)(?:and|or)\s+''[^'']+''\s*=\s*''[^'']*'''
+      - '(?i)(?:and|or)\s+\d+\s*(?:like|between|in)\s*\d+'
+      - '(?i)(?:\band\b|\bor\b)\s+(?:true|false)\s*--'
+      - '(?i)1=1\s*--\s*$'
+      - '(?i)1=2\s*--\s*$'
+      - "(?i)(?:and|or)\\s+substring\\s*\\("
+      - '(?i)(?:and|or)\s+ascii\s*\(\s*substr(?:ing)?\s*\('
+
+  - id: SQL_BLIND_TIME
+    name: SQL注入-时间盲注
+    category: SQL注入
+    severity: critical
+    patterns:
+      - '(?i)(?:and|or|;|\()\s*sleep\s*\(\s*[3-9]\d*\s*\)'
+      - '(?i)\bbenchmark\s*\(\s*[1-9]\d{5,}\s*,'
+      - '(?i)\bwaitfor\s+delay\s+''0*:0*:[1-9]'
+      - '(?i)\bpg_sleep\s*\(\s*[1-9]'
+      - '(?i)\bgenerate_series\s*\(.*repeat\s*\('
+      - '(?i);.*dbms_pipe\.receive_message'
+
+  - id: SQL_STACKED
+    name: SQL注入-堆叠查询
+    category: SQL注入
+    severity: critical
+    patterns:
+      - '(?i);\s*(?:insert\s+into|update\s+\w+\s+set|delete\s+from|drop\s+(?:table|database)|create\s+(?:table|user))'
+      - '(?i);\s*exec(?:ute)?\s+(?:xp_|sp_|master)'
+      - '(?i);\s*declare\s+@\w+\s+'
+      - '(?i);\s*select\s+(?:load_file|into\s+(?:outfile|dumpfile))'
+
+  - id: SQL_OOB
+    name: SQL注入-带外数据渗出(OOB)
+    category: SQL注入
+    severity: critical
+    patterns:
+      - '(?i)\bload_file\s*\(\s*(?:0x|char\(|concat\(|''\\\\\\\\)'
+      - '(?i)\binto\s+(?:outfile|dumpfile)\s+[''"](?:/|[A-Za-z]:)'
+      - '(?i)\butl_http\.request\s*\('
+      - '(?i)\butl_file\.'
+      - '(?i)\bdbms_ldap\.init\s*\('
+      - '(?i)\bxp_dirtree\s*\('
+      - '(?i)\bxp_fileexist\s*\('
+      - '(?i)\bxp_subdirs\s*\('
+      - '(?i)\bexec\s+master\.\.xp_'
+
+  - id: SQL_BYPASS_WAF
+    name: SQL注入-WAF绕过变形
+    category: SQL注入
+    severity: high
+    patterns:
+      - '(?i)sel/\*\*/ect'
+      - '(?i)un(?:ion|%69on|%69%6fn)'
+      - '(?i)%53%45%4c%45%43%54'
+      - '(?i)sel\+ect'
+      - '(?i)un(?:/\*+\*/)?ion(?:/\*+\*/)?sel(?:/\*+\*/)?ect'
+      - '(?i)sElEcT|SeLeCt|sElEcT'
+      - '(?i)0x733e6c65637420'
+
+  - id: SQL_FUNCTIONS
+    name: SQL注入-危险函数调用
+    category: SQL注入
+    severity: high
+    patterns:
+      - '(?i)\buser\s*\(\s*\)\s*(?:--| |=|<|>|\+)'
+      - '(?i)\bversion\s*\(\s*\)\s*(?:--| |=|<|>|\+)'
+      - '(?i)\bdatabase\s*\(\s*\)\s*(?:--| |=|<|>|\+)'
+      - '(?i)information_schema\.\s*(?:tables|columns|schemata)'
+      - '(?i)sys\.(?:tables|columns|objects|databases)'
+      - '(?i)\bgroup_concat\s*\(\s*(?:schema_name|table_name|column_name|username|password)'
+      - '(?i)\bchar\s*\(\s*(?:3[23456789]|[4-9]\d)\s*\)\s*(?:\+|,|\|\|)'
+
+  - id: XSS_SCRIPT_TAG
+    name: XSS-Script标签注入
+    category: XSS
+    severity: high
+    patterns:
+      - '(?i)<script[\s>\/]'
+      - '(?i)<script\s+src\s*='
+      - '(?i)%3cscript'
+      - '(?i)&lt;script'
+      - '(?i)<\/script\s*>'
+
+  - id: XSS_EVENT_HANDLER
+    name: XSS-DOM事件处理器
+    category: XSS
+    severity: high
+    patterns:
+      - '(?i)\bon(?:load|error|click|mouseover|mouseout|focus|blur|change|submit|reset|select|keyup|keydown|keypress|input|dblclick|contextmenu|wheel|drag|drop|copy|cut|paste|touchstart|touchend)\s*='
+      - '(?i)\bonfocus\s*=\s*(?:alert|confirm|prompt|eval)\s*\('
+      - '(?i)<(?:img|svg|body|iframe|input|form|a|div|span)[^>]+on\w+\s*='
+
+  - id: XSS_JS_PROTO
+    name: XSS-JavaScript协议/伪协议
+    category: XSS
+    severity: high
+    patterns:
+      - '(?i)(?:href|src|action|formaction|data|srcdoc)\s*=\s*[''"]?\s*javascript\s*:'
+      - '(?i)javascript\s*:\s*(?:alert|confirm|prompt|eval|void|document)'
+      - '(?i)vbscript\s*:'
+      - '(?i)data\s*:\s*text/html[;,]'
+      - '(?i)data\s*:\s*image/svg\+xml[;,]'
+
+  - id: XSS_HTML_INJECT
+    name: XSS-HTML标签注入
+    category: XSS
+    severity: medium
+    patterns:
+      - '(?i)<(?:iframe|object|embed|applet|meta|base|form)\s'
+      - '(?i)<svg\s+(?:on\w+|xmlns)\s*='
+      - '(?i)<img\s+[^>]*\bsrc\s*=\s*[^>]*\bon\w+\s*='
+      - '(?i)<math\s+(?:on\w+|href)\s*='
+      - '(?i)<details\s+open\s+on\w+\s*='
+
+  - id: XSS_ENCODED
+    name: XSS-编码混淆注入
+    category: XSS
+    severity: medium
+    patterns:
+      - '(?i)%3cscript%3e'
+      - '(?i)%3c%73%63%72%69%70%74%3e'
+      - '(?i)\\u003cscript'
+      - '(?i)&#(?:60|x3c);script'
+      - '(?i)\\x3cscript'
+      - '(?i)<scr(?:\s|%09|%0a|%0d|/\*)ipt'
+
+  - id: XSS_DOM
+    name: XSS-DOM型注入特征
+    category: XSS
+    severity: medium
+    patterns:
+      - '(?i)(?:document\.(?:write|writeln|cookie|location|URL|referrer|domain))\s*='
+      - '(?i)(?:window\.location|location\.href|location\.replace)\s*='
+      - '(?i)\beval\s*\(\s*(?:unescape|atob|String\.fromCharCode)'
+      - '(?i)\binnerHTML\s*=\s*[^;]*(?:location|document|window|cookie)'
+
+  - id: CMD_INJECTION_UNIX
+    name: 命令注入-Unix命令执行
+    category: 命令注入
+    severity: critical
+    patterns:
+      - '(?i)(?:;|\|{1,2}|&&|`)\s*(?:id|whoami|uname|hostname|ifconfig|ip\s+addr|cat\s+/etc/(?:passwd|shadow|hosts)|wget\s+http|curl\s+http)'
+      - '(?i)\$\{\s*IFS\s*\}'
+      - '(?i)\$\((?:id|whoami|uname|cat\s+/etc/passwd|ls\s+/)'
+      - '(?i)`\s*(?:id|whoami|uname|cat\s+/etc/passwd)`'
+      - '(?i)(?:bash|sh|zsh|ksh|csh)\s+-(?:c|i)\s+[''"]'
+      - '(?i)\bnc\s+-(?:e|c)\s+/bin/(?:bash|sh)'
+      - '(?i)/bin/bash\s+-i\s+>&\s+/dev/tcp/'
+      - '(?i)python[23]?\s+-c\s+[''"]import\s+(?:os|socket|subprocess)'
+      - '(?i)perl\s+-e\s+[''"](?:use\s+Socket|system\s*\()'
+
+  - id: CMD_INJECTION_WIN
+    name: 命令注入-Windows命令执行
+    category: 命令注入
+    severity: critical
+    patterns:
+      - '(?i)(?:;|&|\|{1,2})\s*(?:whoami|ipconfig|net\s+(?:user|group|localgroup)|systeminfo|dir\s+[a-z]:\\)'
+      - '(?i)\bcmd(?:\.exe)?\s+/[cCkK]\s+'
+      - '(?i)\bpowershell(?:\.exe)?\s+-(?:enc|nop|noni|w\s+hidden|exec\s+bypass|c\s+[''"])'
+      - '(?i)\bwscript(?:\.exe)?\s+(?://e|//nologo)'
+      - '(?i)\bcertutil\s+-(?:decode|urlcache\s+-split\s+-f)'
+      - '(?i)\bbitsadmin\s+/transfer'
+      - '(?i)\bmshta\s+(?:http|javascript|vbscript)'
+      - '(?i)\bregsvr32\s+/s\s+/n\s+/u\s+/i:http'
+      - '(?i)\brundll32\s+(?:javascript:|shell32)'
+      - '(?i)\bwmic\s+(?:process\s+call\s+create|os\s+get)'
+
+  - id: CMD_JNDI
+    name: JNDI注入-Log4Shell及变形(CVE-2021-44228)
+    category: 命令注入
+    severity: critical
+    patterns:
+      - '\$\{jndi\s*:\s*(?:ldap|rmi|dns|iiop|corba|nds|nis)\s*(?:s|S)?\s*://'
+      - '\$\{(?:lower|upper|:-|::-|#{lower:)\s*j\s*\}'
+      - '(?i)\$\{(?:j|#{j)(?:\$\{lower:n\}|n)(?:\$\{lower:d\}|d)(?:\$\{lower:i\}|i)\s*:'
+      - '(?i)\$\{(?:env|sys|java|main|k8s|spring|ctx|map|bundle|log4j|web):[^}]+\}'
+      - '(?i)j%24%7Bndi'
+      - '(?i)\$\{(?:[^}]*%24%7B|[^}]*#{)[^}]*\}'
+
+  - id: TEMPLATE_INJECTION
+    name: 服务端模板注入(SSTI)
+    category: 命令注入
+    severity: high
+    patterns:
+      - '\{\{\s*(?:7\s*\*\s*7|''7''~''7''|[0-9]+\s*\*\s*[0-9]+)\s*\}\}'
+      - '\{\{\s*(?:config|request|self|g|namespace|lipsum|range|cycler|joiner|dict)\s*[\[\.}\|]'
+      - '\{\{\s*(?:__import__|__class__|__mro__|__subclasses__|__globals__)'
+      - '\{\%\s*(?:for|if|set|block|extends|import|include)[^%]*\%\}'
+      - '<\%=\s*(?:[0-9]+\s*\*\s*[0-9]+|(?:system|exec|`|Runtime|ProcessBuilder))'
+      - '#\{\s*[0-9]+\s*\*\s*[0-9]+\s*\}'
+      - '#\{\s*(?:T\(java\.lang\.|request\.|session\.)'
+      - '\$\{\s*(?:[0-9]+\s*\*\s*[0-9]+|class\.forName)'
+      - '(?i)\{\{(?:.*)(exec|system|popen|subprocess|os\.system|eval)'
+
+  - id: CODE_EVAL
+    name: 代码注入-动态代码执行
+    category: 命令注入
+    severity: critical
+    patterns:
+      - '(?i)(?:\?|&)(?:code|eval|exec|cmd|command|execute|run|shell|php_code)\s*=\s*.{3,}'
+      - '(?i)\beval\s*\(\s*(?:base64_decode|gzinflate|str_rot13|gzuncompress|rawurldecode)\s*\('
+      - '(?i)\bassert\s*\(\s*(?:base64_decode|eval|system|exec|passthru)\s*\('
+      - '(?i)\bpreg_replace\s*\(\s*[''"].*[''"].*[''"]e[''"]'
+      - '(?i)\bcreate_function\s*\(\s*[''"][^'']*[''"].*(?:system|exec|eval|assert)'
+      - '(?i)\bcall_user_func(?:_array)?\s*\(\s*(?:system|exec|passthru|shell_exec|assert)'
+
+  - id: PATH_TRAVERSAL
+    name: 路径穿越攻击
+    category: 文件包含
+    severity: high
+    patterns:
+      - '(?:(?:\.\./){3,}|(?:\.\.\\){3,})'
+      - '(?:%2e%2e%2f){2,}'
+      - '(?:%252e%252e%252f){2,}'
+      - '(?:\.\.%2f){2,}'
+      - '(?:\.\.%5c){2,}'
+      - '(?:%c0%ae%c0%ae%c0%af){2,}'
+      - '(?:\.\.\/){2,}(?:etc|windows|boot|proc|var)'
+      - '(?i)(?:\.\.\/|\.\.\\){3,}'
+
+  - id: LFI_SENSITIVE
+    name: 本地文件包含-敏感系统文件
+    category: 文件包含
+    severity: critical
+    patterns:
+      - '(?i)/etc/(?:passwd|shadow|master\.passwd|group|gshadow|sudoers|hosts(?:\.allow|\.deny)?|resolv\.conf|ssh/(?:id_rsa|authorized_keys|known_hosts))'
+      - '(?i)/proc/(?:self/(?:environ|cmdline|maps|fd)|version|net/(?:tcp|udp|if_inet6))'
+      - '(?i)/var/log/(?:auth|secure|messages|apache2?/|nginx/)'
+      - '(?i)/windows/(?:win\.ini|system32/drivers/etc/hosts|system32/config/(?:sam|system|software))'
+      - '(?i)/boot/(?:grub/grub\.cfg|vmlinuz)'
+      - '(?i)(?:/home/[^/]+|/root)/\.(?:bash_history|ssh/|aws/credentials|config/gcloud)'
+
+  - id: LFI_PHP_FILTER
+    name: 本地文件包含-PHP伪协议
+    category: 文件包含
+    severity: critical
+    patterns:
+      - '(?i)php://(?:filter|input|stdin|memory|temp|fd)'
+      - '(?i)php://filter/(?:read=|convert\.)?(?:base64-encode|string\.rot13|zlib\.deflate)'
+      - '(?i)expect://(?:id|whoami|ls|cat)'
+      - '(?i)phar://'
+      - '(?i)zip://'
+      - '(?i)glob://'
+      - '(?i)data://text/plain(?:;base64)?,'
+
+  - id: RFI
+    name: 远程文件包含(RFI)
+    category: 文件包含
+    severity: critical
+    patterns:
+      - '(?i)(?:include|require)(?:_once)?\s*[=(]\s*[''"]?https?://'
+      - '(?i)(?:\?|&)(?:file|page|path|url|inc|document|root|pg|style|template|module|conf|config|lang)\s*=\s*https?://'
+      - '(?i)(?:\?|&)(?:file|page|path|url|inc)\s*=\s*(?:ftp|ftps|smb|data|dict|gopher)://'
+      - '(?i)allow_url_include.*https?://'
+
+  - id: WEBSHELL_KNOWN
+    name: Webshell-已知工具特征文件名
+    category: Webshell
+    severity: critical
+    patterns:
+      - '(?i)/(?:upload(?:s|ed)?|files?|attachment(?:s)?|media|static|img|tmp|temp|cache|backup|data|user(?:s)?|assets)/[^/]*\.(?:php[3457]?|phtml|phar|asp|aspx|ashx|asmx|cer|cdx|asa|shtml|jsp[x]?|jspf|jspx)$'
+      - '(?i)(?:c99|r57|b374k|wso|alfa|indoxploit|p0wny|FilesMan|locus7shell|GRP_WEB|simorgh|Seman|b374|Antichat|Loeder|laudanum|tennc|Shark|Godzilla|Behinder|Cknife|Ice|AntSword|Weevely)\.(?:php|asp|aspx|jsp)'
+      - '(?i)(?:shell|cmd|exec|command|hack|spy|root|exploit|backdoor|reverse|bind)\.(?:php[3457]?|phtml|asp|aspx|jsp[x]?)'
+      - '(?i)\.(?:php|asp|aspx|jsp)[^/]*\.(jpg|gif|png|jpeg|bmp|ico|swf|txt|zip|rar)$'
+
+  - id: WEBSHELL_UPLOAD_PATH
+    name: Webshell-上传目录脚本访问
+    category: Webshell
+    severity: critical
+    patterns:
+      - '(?i)^(?:GET|POST)\s+/(?:upload(?:s|ed)?|files?|attachment(?:s)?|media|img|images?|static|tmp|temp|cache|data|assets|public|resource(?:s)?)/(?:[^/]+/){0,3}[^/]+\.(?:php[3457]?|phtml|phar|asp|aspx|ashx|jsp[x]?|jspf)\b'
+
+  - id: WEBSHELL_PARAMS
+    name: Webshell-典型参数特征
+    category: Webshell
+    severity: critical
+    patterns:
+      - '(?i)(?:\?|&)(?:cmd|command|exec|execute|shell|run|c|e|s|op|action|func|function|do|req|request|q|query|pass|passwd|pass1|pass2)\s*=\s*(?:id|whoami|ls|dir|cat|type|wget|curl|nc\s)'
+      - '(?i)(?:\?|&)(?:cmd|command|exec|shell)\s*=\s*[^&]{5,}'
+      - '(?i)(?:ant\.jar|AntSword|Behinder|Godzilla|CKnife|Neo-reGeorg|suo5|frp)(?:/|\?|$)'
+
+  - id: WEBSHELL_BEHINDER
+    name: Webshell-冰蝎/哥斯拉流量特征
+    category: Webshell
+    severity: critical
+    patterns:
+      - '(?i)(?:POST|GET)\s+.*\.(?:php|jsp|asp|aspx)\s+HTTP.*(?:Accept-Encoding.*gzip|Content-Type.*application/octet-stream)'
+      - '(?i)X-Behinder-Version'
+      - '(?i)Godzilla-[\d.]+'
+
+  - id: SSRF_INTERNAL
+    name: SSRF-内网地址访问
+    category: SSRF
+    severity: high
+    patterns:
+      - '(?i)(?:url|src|href|path|redirect|forward|proxy|dest|destination|target|link|host|fetch|request|load|image|img|next|callback|return|to|window|navigate|open)\s*=\s*https?://(?:127\.|0\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|::1|localhost|internal|intranet)'
+      - '(?i)(?:url|src|href)\s*=\s*https?://(?:169\.254\.169\.254|100\.100\.100\.200|fd00:|metadata\.google\.internal)'
+      - '(?i)(?:url|src|href)\s*=\s*(?:file|dict|gopher|ftp|sftp|tftp|ldap)://'
+
+  - id: SSRF_CLOUD_METADATA
+    name: SSRF-云服务元数据接口
+    category: SSRF
+    severity: critical
+    patterns:
+      - '(?i)169\.254\.169\.254'
+      - '(?i)100\.100\.100\.200'
+      - '(?i)metadata\.google\.internal'
+      - '(?i)/(?:latest|2021-01-03|2019-10-01)/meta-data/'
+      - '(?i)/computeMetadata/v[0-9]/'
+      - '(?i)/metadata/instance'
+      - '(?i)fd00:ec2::254'
+      - '(?i)api\.link\.aliyun\.com'
+
+  - id: SSRF_GOPHER
+    name: SSRF-Gopher协议利用
+    category: SSRF
+    severity: critical
+    patterns:
+      - '(?i)gopher://(?:127\.|0\.|10\.|172\.|192\.168\.|localhost)'
+      - '(?i)gopher://[^/]+/_%(?:2a|40|47|52|53|54|55|56|57|58|59)'
+      - '(?i)dict://(?:127\.|0\.|localhost)'
+
+  - id: XXE_DOCTYPE
+    name: XXE-DOCTYPE实体注入
+    category: XXE
+    severity: high
+    patterns:
+      - '(?i)<!DOCTYPE\s+\w+\s*\['
+      - '(?i)<!ENTITY\s+\w+\s+SYSTEM\s+[''"](?:file|http|ftp|php|expect|data|gopher|dict)://'
+      - '(?i)<!ENTITY\s+%\s+\w+\s+SYSTEM\s+[''"]'
+      - '(?i)<!ENTITY\s+\w+\s+PUBLIC\s+[''"][^'']*[''"]'
+      - '(?i)SYSTEM\s+[''"]file:///(?:etc/passwd|windows/win\.ini)'
+
+  - id: DESER_JAVA
+    name: 反序列化-Java序列化数据
+    category: 反序列化
+    severity: critical
+    patterns:
+      - '^(?:POST|PUT)\s+.*\s+HTTP.*rO0AB'
+      - 'rO0ABXNy'
+      - 'aced0005'
+      - '(?i)Content-Type.*application/x-java-serialized-object'
+      - '(?i)java\.(?:lang\.Runtime|io\.ObjectInputStream|util\.HashMap|rmi\.)'
+      - '(?i)org\.apache\.commons\.collections'
+      - '(?i)com\.sun\.org\.apache\.xalan'
+
+  - id: DESER_PHP
+    name: 反序列化-PHP序列化对象
+    category: 反序列化
+    severity: high
+    patterns:
+      - 'O:\d+:"(?:Monolog|Symfony|Guzzle|Illuminate|Laravel|Slim|Yii|Zend|Phalcon|CodeIgniter)\\'
+      - '(?i)O:\d+:"\w+ThinkPHP\w*"'
+      - 'O:\d+:"[A-Za-z_\\\\]+(?:Command|Shell|Exec|System|Process|Upload|File|Remote)[A-Za-z_\\\\]*"'
+      - '(?i)__wakeup|__destruct|__toString.*O:\d+'
+
+  - id: DESER_PYTHON
+    name: 反序列化-Python Pickle
+    category: 反序列化
+    severity: critical
+    patterns:
+      - '(?i)(?:Content-Type.*application/x-pickle|\.pkl\s+HTTP)'
+      - 'cos\nsystem\n'
+      - 'cposix\nsystem\n'
+      - '(?i)pickle\.loads'
+
+  - id: DESER_DOTNET
+    name: 反序列化-.NET ViewState/序列化
+    category: 反序列化
+    severity: high
+    patterns:
+      - '(?i)__VIEWSTATE=.*(?:%2f%2f|%252f|AAEAAAD)'
+      - '(?i)__VIEWSTATEGENERATOR='
+      - '(?i)TypeConfusionDelegate|WindowsIdentity|ObjectDataProvider'
+      - '(?i)BinaryFormatter|DataContractSerializer|NetDataContractSerializer'
+
+  - id: SCANNER_UA_TOOL
+    name: 扫描器-已知安全工具UA
+    category: 扫描探测
+    severity: high
+    patterns:
+      - '(?i)(?:sqlmap|sqlninja|havij|pangolin)/[\d.]+'
+      - '(?i)(?:nmap|masscan|zmap)/[\d.]+'
+      - '(?i)(?:nikto|w3af|skipfish|whatweb|wapiti|arachni)/[\d.]+'
+      - '(?i)(?:acunetix|awvs|webinspect|netsparker|appscan)/[\d.]+'
+      - '(?i)(?:nuclei|jaeles|goby|afrog)/[\d.]+'
+      - '(?i)(?:burpsuite|owasp\s+zap|zaproxy)'
+      - '(?i)(?:dirbuster|gobuster|ffuf|wfuzz|feroxbuster)/[\d.]+'
+      - '(?i)(?:hydra|medusa|thc-hydra)/[\d.]+'
+      - '(?i)(?:nessus|openvas|qualys|rapid7)/[\d.]+'
+      - '(?i)(?:curl|python-requests|go-http-client|java/|okhttp|libwww-perl|lwp-|jakarta\s+commons-httpclient)/[\d.]+'
+
+  - id: SCANNER_DIR_BRUTE
+    name: 扫描器-目录路径爆破特征
+    category: 扫描探测
+    severity: medium
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/(?:\.(?:git|svn|hg|bzr|cvs|bak|DS_Store|idea|vscode|env|htpasswd|htaccess)|(?:WEB-INF|META-INF|MANIFEST\.MF|web\.xml|applicationContext\.xml|struts\.xml|spring\.xml|hibernate\.cfg\.xml))'
+      - '(?i)(?:GET|HEAD)\s+/(?:backup|bak|old|temp|tmp|test|dev|stage|stg|uat|demo|sample|example)/.*'
+      - '(?i)(?:GET|HEAD)\s+/(?:phpinfo|info|test|check|ping|debug|status|health|actuator|monitor|probe)\.php'
+      - '(?i)(?:GET|HEAD)\s+/(?:adminer|phpMyAdmin|pma|dbadmin|mysql|phppgadmin|pgadmin|sqladmin)/(?:index\.php)?'
+
+  - id: SCANNER_VULN_PATH
+    name: 扫描器-漏洞路径探测
+    category: 扫描探测
+    severity: medium
+    patterns:
+      - '(?i)/(?:solr|elasticsearch|kibana|grafana|prometheus|jenkins|gitlab|jira|confluence|sonarqube|nexus|artifactory)/(?:api|rest|web)'
+      - '(?i)/(?:actuator|management)/(?:env|heapdump|trace|logfile|metrics|info|health|mappings|beans|threaddump|shutdown)'
+      - '(?i)/(?:api/v[0-9]+/|graphql|__graphql|graphiql|playground)(?:admin|debug|introspect|schema)?'
+      - '(?i)/(?:swagger(?:-ui)?|api-docs|openapi|redoc|rapidoc)(?:\.json|\.yaml|/|$)'
+
+  - id: SCANNER_FINGER
+    name: 扫描器-系统指纹探测
+    category: 扫描探测
+    severity: low
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/(?:robots\.txt|crossdomain\.xml|clientaccesspolicy\.xml|sitemap\.xml|security\.txt|\.well-known/security\.txt)'
+      - '(?i)(?:GET|HEAD)\s+/(?:server-status|server-info|nginx-status|fpm-status|status\.php)'
+      - '(?i)(?:GET|HEAD)\s+/(?:elmah\.axd|trace\.axd|scriptresource\.axd|webresource\.axd)'
+      - '(?i)(?:GET|HEAD)\s+/(?:index\.php\?=PHP|PHPE9568F34|PHPE9568F35|PHPE9568F36)'
+
+  - id: CVE_STRUTS2_RCE
+    name: Apache Struts2 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)Content-Type.*(?:#|%23)\s*(?:_memberAccess|com\.opensymphony|ognl\.)'
+      - '(?i)(?:redirect|redirectAction|action):[a-zA-Z%0-9$()_]+(?:\.[a-zA-Z]+)?'
+      - '(?i)%23_memberAccess(?:\[|=)'
+      - '(?i)/struts2?/.*\.action\?'
+      - '(?i)isIncluded\((?:#|%23)'
+      - '(?i)Content-Type.*(?:\\.class|ognl\.|openSymphony)'
+
+  - id: CVE_SHIRO_AUTH
+    name: Apache Shiro 认证绕过/反序列化
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - 'rememberMe=[A-Za-z0-9+/=]{100,}'
+      - '(?i)Cookie.*rememberMe=.*(?:deleteMe)?'
+      - '(?i)/(?:\.\./)+(?:WEB-INF|META-INF|etc|admin|login)'
+      - '(?i)/;/(?:admin|user|manage|login|api)'
+      - '(?i)/(?:index|login)\.jsp;jsessionid='
+      - '(?i)/\./(?:admin|manage|config|api)'
+
+  - id: CVE_TOMCAT_RCE
+    name: Apache Tomcat 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/(?:invoker/EJBInvokerServlet|invoker/JMXInvokerServlet)'
+      - '(?i)/manager/(?:text|html)/(?:deploy|undeploy|reload|start|stop|list)'
+      - '(?i)/host-manager/(?:text|html)/(?:add|remove|start|stop|list)'
+      - '(?i)PUT\s+/[^?]+\.(?:jsp[x]?|war)\s+HTTP'
+      - '(?i)/servlet/(?:org\.apache|com\.sun)\..*servlet'
+      - '(?i)/cgi-bin/(?:printenv|test-cgi)'
+
+  - id: CVE_LOG4J2
+    name: Log4j2 JNDI注入(CVE-2021-44228/45046/45105)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '\$\{(?:j|J)(?:n|N)(?:d|D)(?:i|I)\s*:'
+      - '\$\{(?:lower|upper|:-|::-)[^}]*(?:j|J)[^}]*(?:n|N)[^}]*(?:d|D)[^}]*(?:i|I)[^}]*:'
+      - '(?i)\$\{(?:env|sys|java|main|marker|ctx|map|mdc|ndc|spring|k8s|docker|bundle|jvmrunargs|web|jndi)[^}]{0,50}\}'
+      - '(?i)j%24%7Bn%24%7Bdi'
+      - '(?i)%24%7Bjndi'
+      - '\$\{[^}]*\$\{[^}]*\}[^}]*\}'
+
+  - id: CVE_SOLR_RCE
+    name: Apache Solr 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/solr/[^/]+/(?:config|select|query|update|admin/file)\?(?:.*stream\.url=|.*stream\.body=)'
+      - '(?i)/solr/[^/]+/config.*(?:updateRequestProcessorChain|queryResponseWriter)'
+      - '(?i)/solr/admin/(?:cores|collections)\?action=(?:create|reload|unload)'
+      - '(?i)/solr/[^/]+/dataimport\?command=full-import&(?:dataConfig|entity)'
+
+  - id: CVE_HTTPD_RCE
+    name: Apache HTTPD 路径穿越(CVE-2021-41773/42013)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/cgi-bin/\.%2e/(?:bin|usr|etc|proc)'
+      - '(?i)/icons/\.%2e/(?:bin|usr|etc|proc)'
+      - '(?i)/\.%2e/\.%2e/(?:etc/passwd|bin/sh|usr/bin)'
+      - '(?i)/%2e%2e/%2e%2e/etc/passwd'
+      - '(?i)/cgi-bin/%%32%65%%32%65/'
+
+  - id: CVE_SPRING4SHELL
+    name: Spring4Shell 远程代码执行(CVE-2022-22965)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)class\.module\.classLoader'
+      - '(?i)class\[module\]\[classLoader\]'
+      - '(?i)class\.module\.classLoader\.resources\.context\.parent\.pipeline\.first\.'
+      - '(?i)suffix=%25%7B[^}]+%7D&c1=Runtime&c2=&DNT=1'
+
+  - id: CVE_SPRING_CLOUD
+    name: Spring Cloud Gateway RCE(CVE-2022-22947)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)POST\s+/actuator/gateway/routes'
+      - '(?i)POST\s+/actuator/gateway/refresh'
+      - '(?i)"filters":\s*\[\s*"AddResponseHeader'
+      - '(?i)SpEL.*\#\{T\(java\.lang\.Runtime\)'
+
+  - id: CVE_SPRING_ACTUATOR
+    name: Spring Boot Actuator 信息泄露
+    category: CVE漏洞
+    severity: medium
+    patterns:
+      - '(?i)(?:GET|POST)\s+/actuator(?:/(?:env|heapdump|threaddump|logfile|httptrace|mappings|beans|conditions|configprops|metrics|info|health|shutdown|restart|refresh|pause|resume|jolokia|loggers|caches|flyway|liquibase|integrationgraph|scheduledtasks|prometheus|auditlog|auditevents|features))?(?:\?|$|\s)'
+
+  - id: CVE_SPRINGBOOT_H2
+    name: Spring Boot H2控制台RCE
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)(?:GET|POST)\s+/h2-console(?:/login\.do)?'
+      - '(?i)CALL\s+(?:EXEC|RUNTIME|PROCESSBUILDER)'
+      - '(?i)CREATE\s+ALIAS\s+\w+\s+FOR\s+'
+
+  - id: CVE_WEBLOGIC
+    name: WebLogic 反序列化/SSRF/RCE
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/wls-wsat/(?:CoordinatorPortType|RegistrationPortTypeRPC|ParticipantPortType|RegistrationRequesterPortType)'
+      - '(?i)/_async/AsyncResponseService'
+      - '(?i)/console\.portal\?_nfpb=true'
+      - '(?i)/uddiexplorer/(?:SearchPublicRegistries|UddiExplorer)\.jsp'
+      - '(?i)/bea_wls_internal/'
+      - '(?i)T3\s+(?:12|14)\.\d+\.\d+'
+      - '(?i)/(?:ws_utc|wls-management-services)/(?:config|auth)'
+
+  - id: CVE_JBOSS
+    name: JBoss 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/invoker/(?:JMXInvokerServlet|EJBInvokerServlet)'
+      - '(?i)/jmx-console/(?:HtmlAdaptor|checkJNDI)'
+      - '(?i)/web-console/(?:Invoker|invoker)'
+      - '(?i)/admin-console/'
+      - '(?i)/status\?full=true'
+      - '(?i)/jbossws/services'
+
+  - id: CVE_FASTJSON
+    name: FastJSON 反序列化RCE
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)"@type"\s*:\s*"(?:com\.sun\.|java\.(?:lang|net|io)\.|org\.apache\.(?:commons|xalan|bcel|log4j)|org\.springframework\.|org\.codehaus\.groovy)'
+      - '(?i)"@type"\s*:\s*"(?:Jdbc|JdbcRowSetImpl|TemplatesImpl|JndiDataSourceFactory)'
+      - '(?i)"@type"\s*:\s*"javax\.'
+      - '(?i)autoType.*@type'
+
+  - id: CVE_JENKINS
+    name: Jenkins 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/(?:jenkins|ci)/script(?:Text|File)?\?'
+      - '(?i)POST\s+/(?:jenkins|ci)/script\s+'
+      - '(?i)/descriptorByName/(?:hudson|jenkins)\..*\.doCheck'
+      - '(?i)/(?:jenkins|ci)/securityRealm/user/.*/descriptorByName/'
+      - '(?i)/(?:jenkins|ci)/(?:computer|node)/[^/]+/(?:api|ws)/'
+      - '(?i)/(?:jenkins|ci)/userContent/'
+      - '(?i)X-Hudson(?:-CLI-Port)?:'
+
+  - id: CVE_CONFLUENCE
+    name: Confluence 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/pages/doenterpagevariables\.action'
+      - '(?i)/template/aui/text-placeholder\.vm'
+      - '(?i)/pages/createpage-entervariables\.action'
+      - '(?i)/rest/api/1\.0/render'
+      - '(?i)/people/profilepicture\.action'
+      - '(?i)%5c(?:u0027|u0022)'
+      - '(?i)%2f%2a%7b.*%7d%2a%2f'
+      - '(?i)/confluence/(?:login\.action|dashboard\.action)\?(?:queryString|.*%5c)'
+
+  - id: CVE_NACOS
+    name: Nacos 未授权访问/RCE
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/nacos/v[12]/auth/users\?pageNo='
+      - '(?i)/nacos/v[12]/console/namespaces'
+      - '(?i)/nacos/v[12]/cs/configs\?(?:show=all|search=accurate)'
+      - '(?i)User-Agent.*Nacos-Server'
+      - '(?i)/nacos/v[12]/ns/instance(?:List)?\?'
+
+  - id: CVE_DUBBO
+    name: Apache Dubbo 反序列化RCE
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/dubbo(?:admin)?/(?:services|providers|consumers|routes|weights|loadbalances|governance)'
+      - 'dubbo://[0-9.]+'
+
+  - id: CVE_THINKPHP
+    name: ThinkPHP 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)(?:\?|&)(?:s|_method)=(?:/index)?/\w+/\w+/(?:think|invoke|runtime|exec)'
+      - '(?i)_method=__construct&filter(?:\[\])?=(?:system|exec|passthru|assert|eval|call_user_func)'
+      - '(?i)/index\.php\?s=(?:/|%2f)index(?:/|%2f)\w+(?:/|%2f)\w+&(?:think_ajax|[^=]+=)'
+      - '(?i)/(?:thinkphp|tp)/(?:library|vendor)/think/'
+      - '(?i)\?s=(?:/index/\\\w+/\\\w+|/\\\w+/\\\w+/\\\w+)'
+
+  - id: CVE_LARAVEL
+    name: Laravel 调试模式RCE/信息泄露
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/(?:telescope|horizon|debugbar|ignition)/(?:api/)?(?:execute-solution|requests|jobs|exceptions|logs|commands|views|mail|events|cache|queries|models|redis|gates|dumps)'
+      - '(?i)POST\s+/ignition/execute-solution'
+      - '(?i)/(?:_debugbar|__debugbar)/(?:openhandler|clockwork|assets|fonts)'
+      - '(?i)APP_KEY\s*=\s*base64:'
+
+  - id: CVE_DRUPAL
+    name: Drupalgeddon 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/\?q=(?:user|node)/(?:0|1)/(?:password|cancel)'
+      - '(?i)name\[%23(?:post_render|pre_render|type)\]'
+      - '(?i)/sites/default/files/[^/]+\.php'
+      - '(?i)element_children'
+      - '(?i)element_\[#cache_callback\]'
+
+  - id: CVE_WORDPRESS
+    name: WordPress 漏洞利用
+    category: CVE漏洞
+    severity: high
+    patterns:
+      - '(?i)/wp-(?:login|admin|cron|config|mail|trackback|xmlrpc)\.php'
+      - '(?i)/wp-(?:content|includes)/(?:[^/]+/){0,3}[^/]+\.php\?'
+      - '(?i)/wp-json/(?:wp/v2/users|wp-site-health/v1|wc/v[123])/(?:list|create|update|delete)'
+      - '(?i)xmlrpc\.php.*(?:wp\.getUsersBlogs|system\.listMethods|wp\.getPost)'
+
+  - id: CVE_EXCHANGE
+    name: Exchange ProxyLogon/ProxyShell
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/owa/auth/(?:x86|x64|current)/themes/resources/[a-f0-9]{8,}\.'
+      - '(?i)/ecp/[a-f0-9-]{8,}\.js\?'
+      - '(?i)/autodiscover/autodiscover\.json\?@(?:[^/]+)/[^?]*\?'
+      - '(?i)/mapi/nspi/\?'
+      - '(?i)/mapi/emsmdb/\?'
+      - '(?i)X-AnonResource-Backend\s*:'
+      - '(?i)Cookie.*X-AnonResource='
+
+  - id: CVE_F5_BIG_IP
+    name: F5 BIG-IP 未授权RCE(CVE-2020-5902/2022-1388)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/tmui/login\.jsp/\.\.;/tmui/(?:locallb|bigip|system|shared)/workspace/'
+      - '(?i)/mgmt/tm/(?:util/bash|ltm/virtual|shared/authn)'
+      - '(?i)/hsqldb(?:%0a|;)%0a'
+      - '(?i)X-F5-Auth-Token\s*:'
+
+  - id: CVE_CITRIX_NETSCALER
+    name: Citrix NetScaler RCE(CVE-2023-3519/CVE-2019-19781)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/vpn/\.\.(?:%2f|/)+(?:vpns|portal)/'
+      - '(?i)/gwtest/portalroute\.do'
+      - '(?i)/nf/auth/doAuthentication'
+      - '(?i)/\.\.%2f(?:vpn|html)'
+      - '(?i)/citrix/xenapp/web'
+
+  - id: CVE_PALO_ALTO
+    name: Palo Alto PAN-OS RCE(CVE-2024-3400)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/php/ztp_gate\.php'
+      - '(?i)/global-protect/login\.esp.*SESSID'
+      - '(?i)SESSID=[^;]*\.\./\.\.'
+      - '(?i)/ssl-vpn/hipreport\.esp'
+
+  - id: CVE_FORTINET_VPN
+    name: Fortinet FortiGate SSL VPN路径穿越(CVE-2018-13379)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/remote/fgt_lang\?lang=(?:\.\.%2f){3,}'
+      - '(?i)/remote/logincheck'
+      - '(?i)/remote/hostcheck_validate'
+
+  - id: CVE_PULSE_VPN
+    name: Pulse Secure VPN 路径穿越(CVE-2019-11510)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/dana-na/auth/url_default/welcome\.cgi\?'
+      - '(?i)/dana/html5acc/guacamole/\.\.%2f'
+      - '(?i)/dana-cached/hc/'
+
+  - id: CVE_GITLAB
+    name: GitLab 远程代码执行
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/users/(?:sign_in|password|confirmation|unlock)'
+      - '(?i)/api/v4/(?:projects/[0-9]+/(?:import|export|repository/archive)|jobs/[0-9]+/artifacts)'
+      - '(?i)git-(?:receive-pack|upload-pack|http-backend)'
+      - '(?i)/api/v4/runners\?registration_token='
+      - '(?i)/-/ide/project'
+
+  - id: CVE_KUBERNETES
+    name: Kubernetes API未授权访问
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/api/v1/(?:namespaces|pods|services|secrets|configmaps|nodes)\b'
+      - '(?i)/apis/(?:apps|batch|extensions)/v[0-9beta]+/'
+      - '(?i)/apis/rbac\.authorization\.k8s\.io/'
+      - '(?i)/exec\?(?:command=|container=|stdin=true)'
+      - '(?i)/pods/[^/]+/exec\?'
+
+  - id: CVE_REDIS_SSRF
+    name: Redis 未授权/SSRF利用
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)gopher://[^/]+/_\*1%0d%0a'
+      - '(?i)gopher://(?:127\.|localhost|10\.|172\.|192\.168\.)[^/]*/_%2a'
+      - 'SLAVEOF\s+\d+\.\d+\.\d+\.\d+\s+\d+'
+      - 'CONFIG\s+SET\s+(?:dir|dbfilename)\s+'
+      - 'EVAL\s+[''"]return\s+(?:io\.popen|os\.execute)'
+
+  - id: CVE_MEMCACHED
+    name: Memcached 未授权注入
+    category: CVE漏洞
+    severity: high
+    patterns:
+      - '(?i)gopher://[^/]+/_%0d%0aset\s+\w+\s+0\s+0\s+\d+'
+      - 'set\s+\w+\s+0\s+\d+\s+\d+\r\n'
+
+  - id: CVE_ELASTICSEARCH
+    name: Elasticsearch 未授权访问/RCE
+    category: CVE漏洞
+    severity: high
+    patterns:
+      - '(?i)(?:GET|POST)\s+/(?:_cat/(?:indices|nodes|shards|aliases)|_cluster/(?:settings|state|health)|_nodes(?:/stats)?)'
+      - '(?i)POST\s+/\w[^/]*/(?:_search|_count|_delete_by_query)\?(?:.*scroll|.*routing)'
+      - '(?i)(?:GET|DELETE)\s+/\*(?:\?|$|\s)'
+      - '(?i)/_search.*(?:script|groovy|mvel|painless)'
+      - '(?i)/_plugins/_sql'
+
+  - id: CVE_MONGODB
+    name: MongoDB 未授权操作
+    category: CVE漏洞
+    severity: high
+    patterns:
+      - '(?i)(?:GET|POST)\s+/api/(?:db|database|mongo|mongodb)/'
+      - '(?i)\$where\s*:\s*[''"](?:function|this\.|sleep)'
+      - '(?i)\$gt\s*:\s*\{\s*\}\s*(?:\}|,)'
+
+  - id: INFO_LEAK_CONFIG
+    name: 信息泄露-配置文件/密钥文件
+    category: 信息泄露
+    severity: high
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/(?:\.env|\.env\.(?:local|production|development|staging|backup|bak|old|example)|config\.(?:php|yml|yaml|json|xml|ini|toml|env)|settings\.(?:py|php|json|yaml)|application\.(?:yml|properties|conf))'
+      - '(?i)(?:GET|HEAD)\s+/(?:wp-config\.php|config\.php|configuration\.php|conf\.php|database\.php|db\.php|connect\.php|settings\.php|config\.inc\.php)'
+      - '(?i)(?:GET|HEAD)\s+/(?:id_rsa|id_dsa|id_ecdsa|id_ed25519|\.ssh/(?:id_rsa|authorized_keys|config)|\.aws/credentials|\.docker/config\.json|\.kube/config|\.netrc|\.pgpass)'
+      - '(?i)(?:GET|HEAD)\s+/(?:Dockerfile|docker-compose\.(?:yml|yaml)|Makefile|Jenkinsfile|\.travis\.yml|\.github/workflows/)'
+      - '(?i)(?:GET|HEAD)\s+/(?:composer\.json|composer\.lock|package\.json|package-lock\.json|yarn\.lock|Gemfile|Gemfile\.lock|requirements\.txt|pipfile|cargo\.toml)'
+
+  - id: INFO_LEAK_GIT
+    name: 信息泄露-Git/SVN版本控制
+    category: 信息泄露
+    severity: high
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/\.git/(?:config|HEAD|COMMIT_EDITMSG|index|packed-refs|refs/heads/|objects/|logs/)'
+      - '(?i)(?:GET|HEAD)\s+/\.svn/(?:entries|wc\.db|format|pristine/)'
+      - '(?i)(?:GET|HEAD)\s+/\.hg/(?:store|dirstate|requires|hgrc)'
+      - '(?i)(?:GET|HEAD)\s+/\.bzr/(?:README|checkout/|branch/)'
+      - '(?i)(?:GET|HEAD)\s+/\.(?:idea|vscode)/[^/]+\.(?:xml|json)'
+
+  - id: INFO_LEAK_BACKUP
+    name: 信息泄露-备份/压缩文件
+    category: 信息泄露
+    severity: medium
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/[^?]*\.(sql|sql\.gz|sql\.zip|sql\.bz2|dump|dmp)(?:\?|$|\s)'
+      - '(?i)(?:GET|HEAD)\s+/(?:backup|bak|db|database|dump|export|full|site|www|web|data)[^?]*\.(?:zip|rar|tar\.gz|7z|tar\.bz2|tgz)(?:\?|$|\s)'
+      - '(?i)(?:GET|HEAD)\s+/[a-zA-Z0-9_.-]+\.(?:bak|backup|old|orig|tmp|temp|swp|swo|copy|\d{4}-\d{2}-\d{2})(?:\?|$|\s)'
+
+  - id: INFO_LEAK_SOURCE
+    name: 信息泄露-源代码泄露
+    category: 信息泄露
+    severity: medium
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/[^?]*\.php~(?:\?|$|\s)'
+      - '(?i)(?:GET|HEAD)\s+/[^?]*\.php\.bak(?:\?|$|\s)'
+      - '(?i)(?:GET|HEAD)\s+/#[^?]+#(?:\?|$|\s)'
+      - '(?i)(?:GET|HEAD)\s+/[^?]+\.(?:java|py|go|rb|js|ts|cs|cpp|c|h|rs|swift)(?:\?|$|\s)'
+      - '(?i)\.git/objects/pack/pack-[a-f0-9]{40}\.(?:idx|pack)'
+
+  - id: BRUTE_FORCE_LOGIN
+    name: 暴力破解-登录接口
+    category: 暴力破解
+    severity: medium
+    patterns:
+      - '(?i)POST\s+/(?:api/)?(?:v[0-9]+/)?(?:auth/)?(?:login|signin|authenticate|token|session|oauth/token|api-token-auth|jwt/create|access_token)\b'
+      - '(?i)POST\s+/(?:user|account|member|admin)/(?:login|signin|auth|token)\b'
+      - '(?i)POST\s+/(?:wp-login\.php|admin/login|administrator/index\.php|backend/default/login)'
+
+  - id: BRUTE_FORCE_SSH_RDP
+    name: 暴力破解-SSH/RDP/数据库端口扫描
+    category: 暴力破解
+    severity: low
+    patterns:
+      - '(?i)(?:GET|POST)\s+/(?:ssh|rdp|ftp|telnet|vnc|mysql|mssql|oracle|postgresql|mongodb|redis)/(?:login|auth|brute)'
+
+  - id: CREDENTIAL_STUFFING
+    name: 撞库攻击特征
+    category: 暴力破解
+    severity: medium
+    patterns:
+      - '(?i)POST\s+/(?:login|signin|auth)\b.*(?:X-Forwarded-For|X-Real-IP):\s*(?:(?:\d{1,3}\.){3}\d{1,3},\s*){3,}'
+
+  - id: UPLOAD_WEBSHELL
+    name: 恶意文件上传-Webshell
+    category: 恶意上传
+    severity: critical
+    patterns:
+      - '(?i)POST\s+/[^?]*(?:upload|file|attach|import|import_data|filemanager)[^?]*\s+HTTP.*Content-Type.*multipart'
+      - '(?i)filename\s*=\s*[''"]?[^''";\r\n]*\.(?:php[3457]?|phtml|phar|asp|aspx|ashx|asmx|cer|cdx|asa|shtml|jsp[x]?|jspf)\b'
+      - '(?i)Content-Type.*(?:text/php|application/php|application/x-php|application/x-httpd-php)'
+      - '(?i)filename\s*=\s*[''"]?[^''";\r\n]*\.(?:jpg|gif|png|jpeg|bmp)\x00\.php'
+
+  - id: UPLOAD_PATH_BYPASS
+    name: 恶意文件上传-扩展名绕过
+    category: 恶意上传
+    severity: high
+    patterns:
+      - '(?i)filename\s*=\s*[''"]?[^''";\r\n]*\.(?:php[3457]?|phtml|phar|phps|shtml|shtm)\s*(?:[''"]|;|$)'
+      - '(?i)filename\s*=\s*[''"]?[^''";\r\n]*\.php(?:%00|%20|%0a|%0d|\.jpg|\.gif|\.png)'
+      - '(?i)filename\s*=\s*[''"]?[^''";\r\n]*(?:\.asp;\.jpg|\.aspx;\.png|\.php\.\.\.)'
+
+  - id: HTTP_REQUEST_SMUGGLING
+    name: HTTP请求走私
+    category: HTTP协议攻击
+    severity: high
+    patterns:
+      - '(?i)Transfer-Encoding\s*:\s*(?:chunked\s*,\s*identity|identity\s*,\s*chunked)'
+      - '(?i)Transfer-Encoding\s*:\s*xchunked'
+      - '(?i)Transfer-Encoding\s*:\s*chunked.*Content-Length\s*:\s*[0-9]'
+      - '(?i)(?:GET|POST)\s+http://[^/]+/'
+
+  - id: HTTP_RESPONSE_SPLIT
+    name: HTTP响应拆分/头注入
+    category: HTTP协议攻击
+    severity: high
+    patterns:
+      - '(?:%0d%0a|%0a|%0d){2,}(?:Content-Type|Set-Cookie|Location|HTTP)'
+      - '(?:\r\n|\r|\n){2,}HTTP'
+      - '(?i)(?:Location|Set-Cookie|Content-Type)\s*:.*(?:%0d%0a|%0a%0d|\r\n|\n\r)'
+
+  - id: HTTP_DANGEROUS_METHOD
+    name: 危险HTTP方法
+    category: HTTP协议攻击
+    severity: medium
+    patterns:
+      - '^(?:TRACE|TRACK)\s+/\s+HTTP'
+      - '^(?:CONNECT)\s+(?!localhost|127\.0\.0\.1)(?:[a-zA-Z0-9.-]+:\d+)\s+HTTP'
+      - '^(?:DELETE|PUT|PATCH)\s+/(?:(?!api/|v\d/|rest/)[^?])+\s+HTTP'
+
+  - id: C2_WEBSHELL_BEACON
+    name: C2-WebShell心跳/回连
+    category: 后门通信
+    severity: critical
+    patterns:
+      - '(?i)(?:GET|POST)\s+/[a-z]{6,12}(?:\.php|\.jsp|\.asp)\?(?:[a-z]{1,5}=[a-zA-Z0-9+/=]{20,})\s+HTTP'
+      - '(?i)(?:GET|POST)\s+/[a-zA-Z0-9]{8,32}(?:\.php|\.jsp|\.aspx)\s+HTTP/1\.1\s*$'
+      - '(?i)User-Agent\s*:\s*(?:python-requests/2\.\d+\.\d+|go-http-client/1\.1|curl/7\.\d+\.\d+)\s*$'
+
+  - id: C2_COBALT_STRIKE
+    name: C2-Cobalt Strike特征
+    category: 后门通信
+    severity: critical
+    patterns:
+      - '(?i)(?:GET|POST)\s+/(?:ca|cm|cx|ne|ni|pp|pu|px|sc|sk|sl|st|sv|ta|tl|ts|tu|tx|up|w|wp)/(?:[a-zA-Z0-9_-]+)\s+HTTP'
+      - '(?i)Cookie\s*:\s*(?:MUIDB|PHPSESSID|__cfduid|_ga|_gid)\s*=\s*[a-zA-Z0-9+/=]{30,}'
+      - '(?i)Malleable-C2-Profile'
+      - '(?i)X-Forwarded-For\s*:\s*(?:1\.2\.3\.4|1\.1\.1\.1)\s*$'
+
+  - id: C2_ICMP_DNS_TUNNEL
+    name: C2-DNS隧道/隐蔽通信
+    category: 后门通信
+    severity: high
+    patterns:
+      - '(?i)(?:GET|POST)\s+/(?:dns|tunnel|proxy)\?(?:q|query|name|host)=[a-zA-Z0-9.]{40,}'
+      - '(?i)Host\s*:\s*[a-f0-9]{32,}\.'
+
+  - id: OPEN_REDIRECT
+    name: 开放重定向
+    category: 其他攻击
+    severity: low
+    patterns:
+      - '(?i)(?:\?|&)(?:redirect|return|next|url|goto|link|to|forward|dest|destination|rurl|target|continue|back|return_url|redirect_to|redirect_url|back_url|callback_url|from_url|go)\s*=\s*(?:https?://|//)[^/]'
+      - '(?i)(?:\?|&)(?:redirect|url)\s*=\s*(?:%2f%2f|%252f%252f)[^&]'
+
+  - id: CSRF_PROBE
+    name: CSRF-跨站请求伪造探测
+    category: 其他攻击
+    severity: low
+    patterns:
+      - '(?i)(?:POST|PUT|DELETE|PATCH)\s+/[^?]+\s+HTTP.*Referer\s*:\s*https?://(?!(?:[^/]+\.)?your-domain\.com)'
+      - '(?i)Origin\s*:\s*null\s*$'
+
+  - id: CLICKJACKING
+    name: 点击劫持探测
+    category: 其他攻击
+    severity: low
+    patterns:
+      - '(?i)(?:GET|HEAD)\s+/[^?]+\s+HTTP.*X-Frame-Options\s*:\s*(?:SAMEORIGIN|DENY)'
+
+  - id: GRAPHQL_INTROSPECT
+    name: GraphQL接口探测/注入
+    category: 其他攻击
+    severity: medium
+    patterns:
+      - '(?i)(?:POST|GET)\s+/(?:graphql|api/graphql|graphiql|__graphql|playground)(?:\?|$|\s)'
+      - '(?i)\{__schema\{types\{name'
+      - '(?i)\{__type\(name:'
+      - '(?i)query IntrospectionQuery'
+      - '(?i)mutation\s+\{.*(?:create|update|delete|remove|destroy)'
+
+  - id: PROTOTYPE_POLLUTION
+    name: JavaScript原型链污染
+    category: 其他攻击
+    severity: high
+    patterns:
+      - '(?i)__proto__\s*(?:\[|\.|=)'
+      - '(?i)constructor\.prototype\s*(?:\[|\.|=)'
+      - '(?i)\[__proto__\]'
+      - '(?i)%5B__proto__%5D'
+      - '(?i)__proto__\[.*\]='
+
+  - id: DESYNC_ATTACK
+    name: 缓存投毒/请求desync
+    category: 其他攻击
+    severity: medium
+    patterns:
+      - '(?i)X-(?:Forwarded-Host|Forwarded-Scheme|Rewrite-URL|Original-URL|Forwarded-Proto)\s*:\s*(?:https?://|//)'
+      - '(?i)X-Host\s*:\s*\d+\.\d+\.\d+\.\d+'
+      - '(?i)X-(?:HTTP-Method-Override|Method-Override|Tunneled-Method)\s*:\s*(?:DELETE|PUT|PATCH)'
+
+  - id: OA_TONGDA
+    name: 通达OA 远程代码执行/文件上传
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/apps/\.+/(?:delete_log|check_user|insert_into_product)\.php'
+      - '(?i)/tongda/(?:pda/)?(?:login|general/data_center|webmain/work/oauth|module/NetDisk|inc/package)'
+      - '(?i)/apps/app/(?:data|html|js)/(?:public/pc/)?(?:login|check|general)'
+      - '(?i)/general/(?:data_center|document|report|personnel|workflow|attend|crm)/(?:select|upload|down|delete|edit|view)'
+      - '(?i)/api/(?:attachment_upload|get_param|getsession)'
+      - '(?i)/pda/pa_detail\.php'
+      - '(?i)/mobile/api/(?:login|attachment_upload|getparam)'
+
+  - id: OA_PANWEI
+    name: 泛微OA(e-cology/e-office) RCE/SQL注入
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/weaver/(?:bsh\.servlet\.BshServlet|Bsh\.servlet\.BshServlet)'
+      - '(?i)/wui/(?:gzda|common/workflow|core/conn|theme/ecology7)/(?:interface|upload|select)'
+      - '(?i)/api/(?:hrm/emmanager|workflow/request/getRequestNodeInfo)'
+      - '(?i)/e/(?:action/|common/|mobile/|oauthLogin|pub/)'
+      - '(?i)/weaver/weaver\.common\.Ctrl'
+      - '(?i)/mobile/plugin/(?:download|upload)\.jsp'
+      - '(?i)/page/exportExcel\.jsp'
+      - '(?i)/weaver/ecology9/(?:html|plugin)/.*'
+      - '(?i)/seeyon/(?:htmlofficeservlet|thirdpartyController)'
+
+  - id: OA_LANDRAY
+    name: 蓝凌OA SSRF/RCE
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/sys/(?:ui/extend/vxml/custom|log/json4j)'
+      - '(?i)/admin\.do\?(?:method=|doType=|pages=)'
+      - '(?i)/data/sys-common/download\.do\?path='
+      - '(?i)/sys/ui/extend/vxml/custom\.jsp\?custom='
+      - '(?i)/lkadmin/sys/ui/'
+      - '(?i)/customization/extend/workplace/'
+      - '(?i)/third/(?:drive|workPlace)/(?:upload|download)'
+      - '(?i)/fileUpload\?(?:fileType=|module=|id=)'
+
+  - id: OA_SEEYON
+    name: 致远OA(Seeyon) 任意文件上传/RCE
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/seeyon/(?:htmlofficeservlet|thirdpartyController\.do|autoinstall\.do|main\.do)'
+      - '(?i)/seeyon/(?:ajax|common|login|seeyonCallbackServlet)'
+      - '(?i)/yyoa/(?:common/js/frame|ext/custom|oa/index)'
+      - '(?i)/seeyon/.*?(?:fileUpload|upload|down_attachment|importData)'
+      - '(?i)/ApliAction\.do\?method=(?:getFileStream|verifyAppliAction)'
+      - '(?i)/seeyon/(?:fileDownload|guestUser)\.do'
+
+  - id: OA_KINGDEE
+    name: 金蝶云星空/EAS/K3 未授权访问
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/ierp/(?:kapi/|bos/|mobile/)|/ierp/kapi/v2/|/kapi/v[0-9]+/'
+      - '(?i)/webapi/(?:FormAPI|ReportAPI|AppAPI)/Get(?:Data|List|Form)\b'
+      - '(?i)/k3cloud/(?:login/|Kingdee\.BOS\.WebApi\.ServicesStub)'
+      - '(?i)/eas/(?:com\.kingdee\.eas|portal|EASLogin\.jsp)'
+      - '(?i)/Kingdee\.BOS\.ServiceFacade\.ServicesStub\.AccountService'
+      - '(?i)/k3Cloud/(?:kapi|sdk)/(?:auth|verify|token)'
+
+  - id: OA_YONYOU
+    name: 用友NC/U8/GRP SQL注入/RCE
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/servlet/(?:~ic|~dm)/com\.yonyou\.(?:nc|ua)'
+      - '(?i)/uapws/(?:jaxws|rest)/(?:session|platform)'
+      - '(?i)/portal/(?:main|pt_start|index)\.jsp'
+      - '(?i)/ncccm/(?:login|logout|main)'
+      - '(?i)/nc_web/(?:erm|portal)/(?:login|pub|api)'
+      - '(?i)/uap/(?:b/ic/pub|frame/login)\.jsp'
+      - '(?i)/u8cloud/(?:api/)?uapAuthentication'
+      - '(?i)/grpU8/(?:grp|uap)/(?:login|main)'
+
+  - id: OA_SHIHU
+    name: 时光OA/华天动力OA 任意文件读取
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/OAapp/WebObjects/OAapp\.woa'
+      - '(?i)/oa/(?:upload|download|attachment)/.*'
+      - '(?i)/admin/(?:login|index|filemanager)\.php\?(?:action|do|m)='
+
+  - id: OA_RUIJIE
+    name: 锐捷网络/云桌面 未授权访问
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/api/(?:v[0-9]+/)?user(?:/login|/info|/list|/create)'
+      - '(?i)/RG-UAC/(?:login|logout|download)'
+      - '(?i)/RGNMS/(?:login|api|monitor)'
+      - '(?i)/rg(?:cloud|noc|vdi)/(?:api|login|web)'
+
+  - id: OA_WEAVER_ECOLOGY9
+    name: 泛微ecology9 任意文件上传(CNVD-2019-32204)
+    category: OA系统
+    severity: critical
+    patterns:
+      - '(?i)/weaver/weaver\.file\.FileUpload'
+      - '(?i)/weaver/com\.weaver\.formmodel\.apps\.ktree\.servlet\.KtreeUploadAction'
+      - '(?i)/weaver/ecology9/upload\?(?:isFromecology=1|.*)'
+      - '(?i)/weaver/com\.weaver\.base\.action\.BaseActionServlet'
+
+  - id: COMP_SHIRO_DESER
+    name: Shiro RememberMe反序列化(CVE-2016-4437)
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - 'Cookie:.*rememberMe=[A-Za-z0-9+/]{100,}={0,2}(?:$|\s)'
+      - 'Set-Cookie:.*rememberMe=deleteMe'
+
+  - id: COMP_FASTJSON_RCE
+    name: FastJSON反序列化RCE(1.2.24/1.2.47/1.2.68)
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '"@type"\s*:\s*"(?:com\.sun\.rowset\.JdbcRowSetImpl|org\.apache\.ibatis\.datasource|com\.zaxxer\.hikari|org\.apache\.tomcat|com\.alibaba\.druid|org\.springframework\.jdbc)'
+      - '"@type"\s*:\s*"(?:java\.net\.InetAddress|java\.net\.Inet4Address|java\.net\.Inet6Address)"'
+      - '"@type"\s*:\s*"(?:Jdbc|JdbcRowSet|Jtds)'
+      - '"autoCommit"\s*:\s*(?:true|false).*"@type"'
+      - '"dataSourceName"\s*:\s*"(?:ldap|rmi|iiop)://'
+
+  - id: COMP_JACKSON_DESER
+    name: Jackson反序列化RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '"@class"\s*:\s*"(?:com\.sun\.|java\.lang\.|org\.apache\.commons\.)'
+      - '"@class"\s*:\s*"(?:org\.springframework\.|ch\.qos\.logback\.|com\.mchange\.v2\.)'
+      - '"@class"\s*:\s*"(?:org\.apache\.xbean\.|org\.jdom\.|org\.dom4j\.)'
+
+  - id: COMP_XSTREAM_DESER
+    name: XStream XML反序列化RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)<java\.lang\.ProcessBuilder>'
+      - '(?i)<java\.lang\.Runtime>'
+      - '(?i)<dynamic-proxy>.*<interface>com\.sun\.'
+      - '(?i)<sorted-set>.*<comparator class="'
+      - '(?i)<com\.sun\.org\.apache\.xalan'
+
+  - id: COMP_YAML_DESER
+    name: SnakeYAML反序列化RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)!!(?:java\.lang\.Runtime|javax\.script\.ScriptEngine|org\.springframework\.|com\.sun\.)'
+      - '(?i)!!python/object/apply:os\.system'
+      - '!!com\.sun\.rowset\.JdbcRowSetImpl'
+
+  - id: COMP_GROOVY_RCE
+    name: Groovy脚本注入RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)(?:import\s+)?groovy\.(?:lang|transform|util)\.'
+      - '(?i)GroovyShell.*(?:evaluate|parse|run)'
+      - '(?i)(?:@Grab|@Grapes)\s*\(\s*(?:group|module)\s*='
+      - "(?i)\"cmd\".execute\\(\\)"
+
+  - id: COMP_EL_INJECTION
+    name: EL表达式注入(JSP/Spring)
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '\$\{(?:[0-9]+\s*\*\s*[0-9]+|T\s*\(java\.lang\.Runtime\)|T\s*\(java\.lang\.ProcessBuilder\))'
+      - '\$\{(?:applicationScope|sessionScope|requestScope|param|header|cookie)\[.*\](?:\s*\+|\s*,)}'
+      - '(?i)\$\{(?:runtime|class|system|process|exec|shell)(?:\.|::)'
+      - '#\{(?:facesContext|externalContext|application|session|request)\.'
+
+  - id: COMP_VELOCITY_SSTI
+    name: Velocity模板注入
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '#set\s*\(\s*\$[a-zA-Z]+\s*=\s*(?:[0-9]+\s*\*\s*[0-9]+|".*"\.class)'
+      - '#(?:include|parse|evaluate|macro)\s*\(\s*[''"]'
+      - '\$\{[a-zA-Z.]+\.exec\s*\('
+      - '(?i)\$class\.inspect\s*\('
+
+  - id: COMP_FREEMARKER_SSTI
+    name: FreeMarker模板注入
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '(?i)<#assign\s+\w+\s*=\s*[''"]freemarker'
+      - '(?i)freemarker\.template\.utility\.Execute'
+      - '(?i)\?api\.class\.forName\s*\('
+      - '(?i)<#list\s+[0-9]+\s*\.\.[0-9]+\s+as'
+      - '"template"\s*:\s*.*\$\{.*\}'
+
+  - id: COMP_THYMELEAF_SSTI
+    name: Thymeleaf模板注入
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '(?i)__\$\{[^}]+\}__\s*::'
+      - '(?i)__\$\{T\(java\.lang\.Runtime\)'
+      - '(?i)\[\[#\s*[^]]+\]\]'
+      - '(?i)th:(?:text|utext|value|attr|href)=".*\$\{.*\}"'
+
+  - id: COMP_MYBATIS_SQLI
+    name: MyBatis SQL注入(${}参数)
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '(?i)(?:order|orderBy|order_by|sortBy|sort_by|sort|column|field|table)\s*=\s*(?:[''"]?)\s*(?:desc|asc)\s*(?:--|;|union|and|or)'
+      - '(?i)(?:\?|&)(?:orderBy|sortField|sort)\s*=\s*(?:[a-zA-Z_]+\s+(?:desc|asc)\s*)?(?:--|and\s|or\s)'
+
+  - id: COMP_ACTIVEMQ_RCE
+    name: Apache ActiveMQ RCE(CVE-2023-46604)
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/(?:api/)?(?:message|queue|topic)\.(?:jsp|do)\?(?:clientId|destination)='
+      - '(?i)/admin/(?:createDestination|purgeDestination|deleteDestination)\.action'
+      - '(?i)ActiveMQ.*ExceptionResponse'
+      - '(?i)/api/jolokia(?:/read|/write|/exec|/search)?'
+
+  - id: COMP_KAFKA_UNAUTH
+    name: Apache Kafka/Zookeeper 未授权访问
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '(?i)/(?:kafka|topics|consumers|brokers)(?:/[^/]+)?(?:/offsets|/partitions|/members)?(?:\?|$)'
+      - '(?i)/v[0-9]/(?:clusters|topics|brokers|consumers)/[^/]+'
+
+  - id: COMP_HADOOP_UNAUTH
+    name: Hadoop/HDFS/YARN 未授权RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/ws/v1/cluster/(?:apps/new-application|apps|nodes|metrics)'
+      - '(?i)/ws/v1/(?:mapreduce|history)/(?:jobs|mapreduce)'
+      - '(?i)/webhdfs/v1/.*\?op=(?:MKDIRS|CREATE|APPEND|DELETE|RENAME|SETPERMISSION|SETTIMES)'
+      - '(?i)/jobhistory/(?:app|job)/[a-z0-9_]+'
+
+  - id: COMP_SPARK_UNAUTH
+    name: Apache Spark 未授权访问/RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/api/v1/(?:applications|jobs|stages|executors|allexecutors|environment|storage|streaming)'
+      - '(?i)/api/v1/applications/[^/]+/(?:jobs|stages|storage/rdd|executors|environment)'
+
+  - id: COMP_FLINK_UNAUTH
+    name: Apache Flink 未授权上传/RCE
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/jars/(?:upload|run|delete|plan)'
+      - '(?i)/jobs/(?:[a-f0-9]+/)?(?:plan|cancel|rescale|savepoints)'
+      - '(?i)/taskmanagers/[^/]+/(?:log|stdout|metrics)'
+
+  - id: COMP_NEXUS_RCE
+    name: Nexus Repository RCE(CVE-2019-7238/CVE-2020-10199)
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/service/(?:rest|siesta)/(?:beta|v1)/(?:repositories|search|assets|components)'
+      - '(?i)/service/extdirect.*action.*(?:coreui_|wizard_)'
+      - '(?i)/service/rest/v1/(?:script|tasks)/[^/]+/run'
+
+  - id: COMP_HARBOR_UNAUTH
+    name: Harbor镜像仓库 未授权访问
+    category: 组件漏洞
+    severity: high
+    patterns:
+      - '(?i)/api/(?:v2\.0/)?(?:projects|repositories|artifacts|users|registries|webhooks)'
+      - '(?i)/v2/[^/]+/[^/]+/(?:manifests|tags|blobs)/[^/]+'
+
+  - id: COMP_GRAFANA_RCE
+    name: Grafana 目录穿越/账号接管(CVE-2021-43798/CVE-2023-28716)
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/public/plugins/[a-z-]+/\.\.(?:%2f|/)+'
+      - '(?i)/api/(?:snapshots|dashboards|datasources|users|org|alert-notifications|folders|teams|search)'
+      - '(?i)/api/ds/query.*(?:rawSql|rawQuery|query)'
+      - '(?i)/grafana/(?:public/plugins|api/snapshots)'
+
+  - id: COMP_PROMETHEUS_UNAUTH
+    name: Prometheus 未授权访问/SSRF
+    category: 组件漏洞
+    severity: medium
+    patterns:
+      - '(?i)/(?:metrics|federate|targets|api/v1/(?:query|series|labels|targets|rules|alerts|status))'
+      - '(?i)/api/v1/query(?:_range)?\?query='
+      - '(?i)/api/v1/admin/(?:tsdb|wal|rules)'
+
+  - id: COMP_KIBANA_SSTI
+    name: Kibana SSTI/原型链污染(CVE-2019-7609)
+    category: 组件漏洞
+    severity: critical
+    patterns:
+      - '(?i)/api/console/proxy\?path='
+      - '(?i)/api/console/(?:api_server|autocomplete|proxy)\b'
+      - '(?i)/app/kibana#/(?:dev_tools|management|discover)'
+      - '(?i)/api/saved_objects/(?:_bulk_create|_bulk_get|_find)'
+
+  - id: NET_SANGFOR_RCE
+    name: 深信服VPN/SSL-VPN RCE
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/dana-na/auth/url_default/welcome\.cgi'
+      - '(?i)/svpn/(?:index\.html|portal/main|login)'
+      - '(?i)/cgi-bin/sslvpn/(?:portal|login|logout)'
+      - '(?i)/SVPN_index\.html'
+      - '(?i)/api/(?:sslvpn|ssluser|resource)'
+
+  - id: NET_HIKVISION_RCE
+    name: 海康威视 任意文件读取/RCE(CVE-2021-36260)
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/SDK/webLanguage\b'
+      - '(?i)/app/(?:isapi|webapi)/(?:security|event|streaming|ptz|io|system)/(?:sessionLogin|capabilities|status)'
+      - '(?i)/ISAPI/(?:Security|Event|System|Streaming)/channels'
+      - '(?i)/PSIA/(?:System|Security|Custom)/'
+      - '(?i)/System/configurationFile\?auth='
+      - '(?i)/doc/page/login\.asp'
+
+  - id: NET_DAHUA_RCE
+    name: 大华摄像头 未授权访问/RCE
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/RPC2'
+      - '(?i)/cgi-bin/(?:magicBox|configManager|userManager|mediaFileFind)\.cgi'
+      - '(?i)/dh/(?:config|system|network)(?:\.asp)?'
+      - '(?i)/SnapshotJPEG\?Resolution='
+
+  - id: NET_RUIJIE_RCE
+    name: 锐捷网络设备 命令执行
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/ajax/(?:login_check|get_ip_mac|get_vlan|set_)\b'
+      - '(?i)/WEB_VMS/LIVESITE/'
+      - '(?i)/(?:cgi-bin|cgi)/rg_(?:login|logout|main)'
+      - '(?i)/get_cgi\?cmd='
+
+  - id: NET_HUAWEI_RCE
+    name: 华为设备 未授权访问
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/rest/(?:plat/smapp|chargingapi|sms)/(?:v1|v2|v3)/'
+      - '(?i)/iocm/app/(?:sub|pub|cmd)/(?:v1|v2)/'
+      - '(?i)/ONVIF/(?:device_service|media_service)'
+      - '(?i)/deviceconfig\.cgi'
+
+  - id: NET_TPLINK_UNAUTH
+    name: TP-Link路由器 未授权访问/RCE
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/cgi-bin/(?:luci|cgi-bin)/(?:login|logout|api|rpc)'
+      - '(?i)/webpages/index\.html'
+      - '(?i)/userRpm/(?:LoginRpm|MenuRpm|popupSiteSurvey)'
+      - '(?i)/cgi-bin/qcmap_web_cgi'
+
+  - id: NET_JUNIPER_RCE
+    name: Juniper Junos OS RCE(CVE-2023-36845)
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/webauth/expiredpasswd'
+      - '(?i)/dana-na/css/(?:ds|ra)\.css\?(?:Format|Factory|Type)='
+      - '(?i)/(?:remote|dana)/index\.cgi'
+
+  - id: NET_CISCO_RCE
+    name: Cisco IOS/ASA/FTD RCE
+    category: 网络设备
+    severity: critical
+    patterns:
+      - '(?i)/+CSCOE\+/(?:session|logon|saml|oAuth)'
+      - '(?i)/webvpn/(?:index\.html|login|logout|portal)'
+      - '(?i)/admin/exec/(?:dir|show|debug|ping|traceroute)'
+      - '(?i)/api/open/(?:auth|v[0-9]+)/(?:login|token)'
+
+  - id: MAIL_COREMAIL_RCE
+    name: Coremail邮件系统 XXE/SSRF/RCE
+    category: 邮件系统
+    severity: critical
+    patterns:
+      - '(?i)/coremail/(?:XT5|XT3|XD5)/(?:admin|login|user|app)/.*'
+      - '(?i)/coremail/common/(?:index|login|XT5)\.jsp'
+      - '(?i)/webmail/index\.do\?func='
+      - '(?i)/coremail/(?:XT\.jsp|login\.do|res/)'
+
+  - id: MAIL_EXCHANGE_PROXYSHELL
+    name: Exchange ProxyShell(CVE-2021-34473/34523/31207)
+    category: 邮件系统
+    severity: critical
+    patterns:
+      - '(?i)/autodiscover/autodiscover\.json\?@[^/]+/ews/exchange\.asmx'
+      - '(?i)/mapi/nspi/\?MailboxId='
+      - '(?i)/EWS/Exchange\.asmx\?a=~'
+      - '(?i)/owa/auth/[a-f0-9]{32}/'
+      - '(?i)/powershell\?(?:serializationLevel|clientApplication)'
+
+  - id: MAIL_ZIMBRA_RCE
+    name: Zimbra邮件系统 RCE(CVE-2022-27925/CVE-2022-37042)
+    category: 邮件系统
+    severity: critical
+    patterns:
+      - '(?i)/service/(?:admin/soap|soap|extension/proxy|pubcal)/\b'
+      - '(?i)/Autodiscover/Autodiscover\.xml'
+      - '(?i)/zimbra/(?:h/logout|preauth|public|downloads)(?:\?|$)'
+      - '(?i)/zimbraAdmin/(?:soap|login|index\.jsp)'
+      - '(?i)/mboximport\?(?:fmt=tgz|accountName=).*'
+
+  - id: MAIL_SENDMAIL_POSTFIX
+    name: Sendmail/Postfix 邮件注入
+    category: 邮件系统
+    severity: high
+    patterns:
+      - '(?i)(?:to|cc|bcc|from|subject)=[^&]*(?:%0a|%0d|%0d%0a|\r\n|\n\r)\s*(?:bcc|cc|to|subject):'
+      - '(?i)(?:to|from|subject)=.*\r\n(?:content-type|mime-version|content-transfer)'
+
+  - id: CMS_WORDPRESS_PLUGIN
+    name: WordPress插件漏洞利用
+    category: CMS漏洞
+    severity: high
+    patterns:
+      - '(?i)/wp-content/plugins/(?:revslider|gravity-forms|wp-file-manager|duplicator|contact-form-7|elementor|woocommerce|yoast|w3-total-cache|wpforms|wp-super-cache|all-in-one-wp-migration)/[^?]+'
+      - '(?i)/wp-json/(?:acf|yoast|wc|elementor|contact-form-7)/v[0-9]+/'
+      - '(?i)action=wp_ajax_(?:revslider_show_image|upload_plugin|install_plugin|delete_plugin)'
+
+  - id: CMS_JOOMLA_RCE
+    name: Joomla! 远程代码执行/SQL注入
+    category: CMS漏洞
+    severity: critical
+    patterns:
+      - '(?i)/index\.php\?option=com_(?:users|content|jce|media|fabrik|fields|ajax)&(?:task|format|view)='
+      - '(?i)/administrator/(?:index|components)\.php\?option=com_'
+      - '(?i)/templates/(?:system|beez|protostar)/(?:error\.php|index\.php\?)'
+
+  - id: CMS_DEDECMS_RCE
+    name: DedeCMS/织梦CMS 代码执行
+    category: CMS漏洞
+    severity: critical
+    patterns:
+      - '(?i)/(?:dede|dedecms)/(?:member|login|admin)/.*\.php(?:\?|$)'
+      - '(?i)/plus/(?:mytag_js|carbuyaction|advancedsearch|download|search)\.php'
+      - '(?i)/data/(?:admin|cache)/(?:config|index|common)\.php'
+      - '(?i)/dede/(?:tpl\.php|login\.php|index\.php|file_manage)'
+
+  - id: CMS_PHPCMS_RCE
+    name: PHPCMS 代码执行/SQL注入
+    category: CMS漏洞
+    severity: critical
+    patterns:
+      - '(?i)/index\.php\?m=member&c=index&a=(?:login|register|pay)'
+      - '(?i)/index\.php\?m=attachment&c=index&a=(?:download|swfupload)'
+      - '(?i)/caches/(?:configs|sessions)/.*\.php'
+      - '(?i)/phpcms/libs/classes/attach_[\w]+\.class\.php'
+
+  - id: CMS_DISCUZ_RCE
+    name: Discuz! 代码执行/SSRF
+    category: CMS漏洞
+    severity: critical
+    patterns:
+      - '(?i)/api/(?:uc_server|thread|user|post)\.php\?'
+      - '(?i)/uc_server/(?:data|avatar)\.php\?m=user&a=(?:sync|logout)'
+      - '(?i)/forum\.php\?mod=(?:ajax|attachment|redirect)&(?:action|aid|url)='
+      - '(?i)/data/(?:template|cache)/(?:common|default)/.*\.php'
+
+  - id: CMS_ECSHOP_RCE
+    name: ECShop SQL注入/RCE(CVE-2018-1273)
+    category: CMS漏洞
+    severity: critical
+    patterns:
+      - '(?i)/user\.php\?act=(?:login|register|edit_attention)'
+      - '(?i)/search\.php\?keywords=.*(?:union|select|benchmark|sleep)'
+      - '(?i)/comment\.php\?act=(?:post|vote)'
+      - '(?i)/include/cls_template\.php'
+
+  - id: CMS_OPENCART_RCE
+    name: OpenCart 文件上传/SQL注入
+    category: CMS漏洞
+    severity: high
+    patterns:
+      - '(?i)/admin/index\.php\?route=(?:common/filemanager|tool/upload|extension/installer)'
+      - '(?i)/index\.php\?route=(?:checkout/confirm|account/register|product/search)&.*(?:union|select)'
+
+  - id: CMS_SHOPXO_RCE
+    name: ShopXO/ShopNC 任意文件上传
+    category: CMS漏洞
+    severity: critical
+    patterns:
+      - '(?i)/index\.php\?s=(?:/admin/upload|/goods/upload|/shopxo/upload)'
+      - '(?i)/application/(?:shopxo|home)/controller/'
+      - '(?i)/public/(?:upload|resource)/[^/]+\.php'
+
+  - id: MW_NGINX_MISCONFIG
+    name: Nginx 配置错误/路径穿越
+    category: 中间件
+    severity: high
+    patterns:
+      - '(?i)/(?:static|media|files|img|upload|public)/\.\.(?:%2f|/)+'
+      - '(?i)/proxy/(?:https?:\/\/|\/\/)'
+      - '(?i)/(?:files|uploads)//(?:etc|proc|var)'
+
+  - id: MW_IIS_RCE
+    name: IIS短文件名枚举/PUT上传
+    category: 中间件
+    severity: high
+    patterns:
+      - '(?i)/[a-zA-Z0-9]{1,6}~\d/'
+      - '(?i)/[a-zA-Z0-9]{1,6}~\d\.[a-zA-Z]{1,4}'
+      - '(?i)OPTIONS\s+/\s+HTTP.*DAV'
+      - '(?i)PROPFIND\s+/(?:\*|[^?]+)\s+HTTP'
+      - '(?i)PUT\s+/[a-zA-Z0-9/_-]+\.(?:asp|aspx|php|jsp)\s+HTTP'
+
+  - id: MW_PHP_WRAPPER
+    name: PHP封装协议/危险函数
+    category: 中间件
+    severity: critical
+    patterns:
+      - '(?i)php://(?:filter/(?:read=convert\.base64-encode/)?resource=|input|stdin|fd/)'
+      - '(?i)(?:include|require|file_get_contents|file_put_contents|readfile|highlight_file|show_source)\s*\(\s*(?:''|")?(?:php://|data://|phar://|zip://|expect://)'
+      - '(?i)(?:\?|&)(?:file|page|path|include)\s*=\s*php://'
+
+  - id: MW_NODEJS_RCE
+    name: Node.js/Express原型链污染/RCE
+    category: 中间件
+    severity: high
+    patterns:
+      - '(?i)(?:__proto__|constructor\.prototype)\[(?:outputFunctionName|escapeFunction|destructuredLocals)\]'
+      - '(?i)require\s*\(\s*(?:child_process|fs|os|path)\s*\)'
+      - '(?i)process\.(?:env|binding|mainModule)(?:\[|\.)'
+      - '(?i)global\.process\.(?:env|mainModule)'
+
+  - id: MW_PYTHON_RCE
+    name: Python/Flask/Django RCE/SSTI
+    category: 中间件
+    severity: critical
+    patterns:
+      - '(?i)\{\{(?:[^}]*\.|config|request|g|namespace|lipsum|cycler|joiner|dict|namespace)\['
+      - '(?i)\{\{.*__class__.*__mro__.*__subclasses__'
+      - "(?i)\\{\\{.*\\[\\]\\.__class__\\..*__base__"
+      - '(?i)(?:import\s+os|os\.(?:system|popen|getenv)|\bexec\b\s*\()'
+      - '(?i)/debug\s+HTTP.*Werkzeug'
+
+  - id: MW_RUBY_RCE
+    name: Ruby on Rails 代码执行(CVE-2019-5418)
+    category: 中间件
+    severity: critical
+    patterns:
+      - '(?i)Accept\s*:\s*\.\./\.\./\.\./'
+      - '(?i)Accept\s*:\s*(?:../../../../etc/passwd|../../../../windows/win.ini)'
+      - '(?i)Content-Type\s*:\s*application/x-www-form-urlencoded.*(?:_method=delete|authenticity_token)'
+
+  - id: MW_DOTNET_RCE
+    name: .NET反序列化/ViewState伪造
+    category: 中间件
+    severity: critical
+    patterns:
+      - '(?i)__VIEWSTATE=.{200,}'
+      - '(?i)__EVENTVALIDATION=.{100,}'
+      - '(?i)/(?:scriptresource|webresource)\.axd\?d=[a-zA-Z0-9+/=]{50,}'
+      - '(?i)TypeConfusionDelegate|ActivitySurrogateSelector'
+      - '(?i)ObjectDataProvider.*MethodName.*ProcessStartInfo'
+
+  - id: VPN_ANYCONNECT
+    name: Cisco AnyConnect SSL-VPN 任意文件读取
+    category: VPN设备
+    severity: critical
+    patterns:
+      - '(?i)/+CSCOE\+/(?:win|mac|linux)(?:osx)?\.x86_64(?:\.dmg)?'
+      - '(?i)/+CSCOE\+/portal\.html'
+      - '(?i)/(?:webvpn|svc)/(?:config|PKI|auth|portal)'
+      - '(?i)/CACHE/stc/1/(?:binaries|images)/'
+
+  - id: VPN_PULSE_PATH_TRAV
+    name: Pulse Secure VPN 路径穿越(CVE-2019-11510/CVE-2021-22893)
+    category: VPN设备
+    severity: critical
+    patterns:
+      - '(?i)/dana-na/auth/url_default/welcome\.cgi\?p='
+      - '(?i)/dana/html5acc/guacamole/%2e%2e/'
+      - '(?i)/dana-cached/hc/HostCheckerInstaller\.osx'
+      - '(?i)/dana-ws/namedusers\b'
+
+  - id: VPN_GLOBALPROTECT
+    name: Palo Alto GlobalProtect VPN RCE(CVE-2024-3400)
+    category: VPN设备
+    severity: critical
+    patterns:
+      - '(?i)/global-protect/(?:prelogin\.esp|login\.esp|getconfig\.esp|hipreport\.esp)'
+      - '(?i)/ssl-vpn/(?:login|hipreport|hipreportcheck)\.esp'
+      - '(?i)/php/(?:ztp_gate|utils/exec)\.php'
+      - '(?i)SESSID=[^;]*(?:\.\./|%2e%2e%2f)'
+
+  - id: CLOUD_DOCKER_API
+    name: Docker API 未授权访问
+    category: 云原生
+    severity: critical
+    patterns:
+      - '(?i)/(?:v[\d.]+/)?containers/(?:json|create|[a-zA-Z0-9]+/(?:start|stop|exec|logs|attach|inspect))'
+      - '(?i)/(?:v[\d.]+/)?images/(?:json|create|[^/]+/(?:json|history|push))'
+      - '(?i)/(?:v[\d.]+/)?exec/[a-zA-Z0-9]+/(?:start|resize|inspect)'
+      - '(?i)/(?:v[\d.]+/)?networks/(?:create|[^/]+/(?:connect|disconnect))'
+
+  - id: CLOUD_K8S_ETCD
+    name: Kubernetes etcd 未授权访问
+    category: 云原生
+    severity: critical
+    patterns:
+      - '(?i)/v3/(?:kv|auth|lease|watch|lock|election|cluster|maintenance)/'
+      - '(?i)/v2/(?:keys|members|stats)/[^?]*'
+
+  - id: CLOUD_SERVERLESS_INJECT
+    name: Serverless/FaaS 注入攻击
+    category: 云原生
+    severity: high
+    patterns:
+      - '(?i)/(?:api/v[0-9]+/)?(?:functions|lambda|invoke)/[^/]+/(?:invocations|run|execute)'
+      - '(?i)(?:x-amz-invocation-type|x-amz-log-type)\s*:'
+      - '(?i)/2015-03-31/functions/[^/]+/(?:invocations|aliases|versions)'
+
+  - id: CLOUD_ALIBABA_ECS_META
+    name: 阿里云ECS元数据接口访问
+    category: 云原生
+    severity: high
+    patterns:
+      - '(?i)100\.100\.100\.200'
+      - '(?i)/latest/meta-data/'
+      - '(?i)/2016-01-01/dynamic/instance-identity'
+      - '(?i)/metadata/latest/(?:instance|network|dns|user-data)'
+
+  # 新增最新规则 (2025-2026)
+  - id: CVE_REACT2SHELL_RCE
+    name: React Server Components RCE (CVE-2025-55182 React2Shell)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)(?:next-action|rsc-action-id):'
+      - '(?i)Content-Type:\s*(?:multipart/form-data|application/x-www-form-urlencoded)'
+      - '(?i)\$[0-9]+:[a-zA-Z0-9_]+:[a-zA-Z0-9_]+'
+      - '(?i)resolved_model|__proto__|constructor\.prototype|_formData\.get'
+      - '(?i)E\{["'']digest["'']|chunk references|status["'']\s*:\s*["'']resolved_model["'']'
+
+  - id: CVE_FORTIWEB_RCE_2025
+    name: FortiWeb 命令注入/未授权 (CVE-2025-64446 / CVE-2025-25257)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/api/v[0-9]+/user|logincheck|config|system'
+      - '(?i)X-F5-Auth-Token|NTP_Server_IP|command injection'
+      - '(?i)/RPC2|/cgi-bin/(?:magicBox|configManager)'
+      - '(?i)SQL injection pattern in FortiWeb endpoint'
+
+  - id: CVE_ROUNDCUBE_RCE_2025
+    name: Roundcube Webmail RCE (CVE-2025-49113 PHP Object Deserialization)
+    category: CVE漏洞
+    severity: critical
+    patterns:
+      - '(?i)/?_from|upload\.php.*_from'
+      - '(?i)PHP Object Deserialization|O:\d+:"'
+      - '(?i)/webmail/index\.do\?func=upload'
